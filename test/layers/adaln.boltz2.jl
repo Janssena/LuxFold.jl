@@ -19,7 +19,7 @@ rng = Random.Xoshiro(42)
                 rank = length(size(x))
                 
                 affine = (layer_norm_a = false, layer_norm_s = true)
-                use_bias = (false, (gate = true,))
+                use_bias = (false, (gate = true, ))
                 
                 jl_layer = AdaLN(chn_a, chn_s; rank, affine, use_bias, epsilon=T(1f-5))
                 ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
