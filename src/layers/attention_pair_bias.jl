@@ -35,7 +35,7 @@ function AttentionPairBias(
     use_bias = resolve_defaults(use_bias, (:layer_norm_in, :layer_norm_z, :linear_z, :mha, :linear_out))
 
     if isnothing(chn_cond)
-        shape = (chn_in, ntuple(one, rank-2))
+        shape = (chn_in, ntuple(one, rank-2)...)
         layer_norm_in = if !affine.layer_norm_in || use_bias.layer_norm_in 
             Lux.LayerNorm(shape; dims=1, affine=affine.layer_norm_in)
         else

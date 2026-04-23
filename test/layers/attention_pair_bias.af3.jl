@@ -15,7 +15,7 @@ rng = Random.Xoshiro(42)
     )
     cond_cfg = (
         ("No cond", nothing, nothing),
-        ("Random cond", 12, rand(rng, Float32, 12, N, B))
+        ("Random cond", 16, rand(rng, Float32, 16, N, B))
     )
     
     for (mask_name, mask) in mask_cfg, (cond_name, chn_cond, cond) in cond_cfg
@@ -62,12 +62,11 @@ rng = Random.Xoshiro(42)
 
             if isnothing(cond)
                 @testset "MSARowAttentionPairBias" begin
+                    S = 6
                     for T in [Float16, Float32, Float64]
-                        S = 1 # Baseline S=1 to verify logic
                         x = randn(rng, T, chn_in, N, S, B)
                         z = randn(rng, T, chn_z, N, N, B)
-                        
-                        x_jl = reshape(x, chn_in, N, S * B)
+                        mask = isnothing(mask) ? nothing : rand(rng, Bool, N, S, B)
                         
                         jl_layer = MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads; fuse_qkv=false)
                         ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
@@ -75,15 +74,21 @@ rng = Random.Xoshiro(42)
                         py_layer = py"AF3MSARowAttentionWithPairBias"(chn_in, chn_z, head_dim, num_heads)
                         sync_af3_msa_row_attention_with_pair_bias!(py_layer, ps)
                         
-                        (y_jl, _), _ = jl_layer(x_jl, z, ps, st)
+                        (y_jl, _), _ = jl_layer(x, z, mask, ps, st)
                         
-                        x_py = torch.from_numpy(permutedims(collect(x), (4, 3, 2, 1))).to(py_dtype(T))
+                        x_py = to_py(permutedims(x, (4, 3, 2, 1)); swap_batch_dim=false)
                         z_py = to_py(z; swap_batch_dim=true)
+                        mask_py = isnothing(mask) ? nothing : to_py(mask; swap_batch_dim=true).to(py_dtype(T))
                         
-                        y_py = py_layer(x_py, z_py)
-                        y_py_jl = permutedims(y_py.detach().cpu().numpy(), (4, 3, 2, 1))
+                        y_py = py_layer(x_py, z_py, mask_py)
                         
-                        @test reshape(y_jl, chn_in, N, S, B) ≈ y_py_jl
+                        @testset "Python parity ($T)" begin
+                            @test y_jl ≈ permutedims(to_jl(y_py; swap_batch_dim=false), (4, 3, 2, 1))
+                        end
+
+                        @testset "Type-stability ($T)" begin
+                            @test_nowarn @inferred jl_layer(x, z, mask, ps, st)
+                        end
                     end
                 end
             end

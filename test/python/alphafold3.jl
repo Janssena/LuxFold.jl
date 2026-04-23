@@ -457,38 +457,30 @@ class AF3CrossAttentionPairBias(nn.Module):
         self.n_query = n_query
         self.n_key = n_key
 
-        if linear_init_params is None:
-            linear_init_params = (
-                lin_init.diffusion_att_pair_bias_init
-                if self.use_ada_layer_norm
-                else lin_init.att_pair_bias_init
-            )
-
         if self.use_ada_layer_norm:
             self.layer_norm_a_q = AF3AdaLN(
-                c_a=self.c_q, c_s=self.c_s, linear_init_params=linear_init_params.ada_ln
+                c_a=self.c_q, c_s=self.c_s
             )
             self.layer_norm_a_k = AF3AdaLN(
-                c_a=self.c_q, c_s=self.c_s, linear_init_params=linear_init_params.ada_ln
+                c_a=self.c_q, c_s=self.c_s
             )
 
             self.linear_ada_out = Linear(
-                self.c_s, self.c_q, **linear_init_params.linear_ada_out
+                self.c_s, self.c_q
             )
         else:
             self.layer_norm_a_q = LayerNorm(c_in=self.c_q)
             self.layer_norm_a_k = LayerNorm(c_in=self.c_q)
 
-        self.linear_z = Linear(self.c_z, no_heads, **linear_init_params.linear_z)
+        self.linear_z = Linear(self.c_z, no_heads)
 
-        self.mha = Attention(
+        self.mha = AF3Attention(
             c_q=c_q,
             c_k=c_k,
             c_v=c_v,
             c_hidden=c_hidden,
             no_heads=no_heads,
             gating=gating,
-            linear_init_params=linear_init_params.mha,
         )
 
         self.sigmoid = nn.Sigmoid()
@@ -695,4 +687,58 @@ class AF3MSAPairWeightedAveraging(nn.Module):
         o = self.linear_o(o)
 
         return o
+
+
+class AF3MSARowAttentionWithPairBias(nn.Module):
+    def __init__(
+        self,
+        c_m,
+        c_z,
+        c_hidden,
+        no_heads,
+        inf=1e9,
+    ):
+        super().__init__()
+        self.c_in = c_m
+        self.c_z = c_z
+        self.c_hidden = c_hidden
+        self.no_heads = no_heads
+        self.inf = inf
+
+        self.layer_norm_m = LayerNorm(self.c_in)
+        self.layer_norm_z = LayerNorm(self.c_z)
+        self.linear_z = Linear(self.c_z, self.no_heads)
+
+        self.mha = AF3Attention(
+            c_q=c_m,
+            c_k=c_m,
+            c_v=c_m,
+            c_hidden=c_hidden,
+            no_heads=no_heads,
+            gating=True,
+        )
+
+    def _prep_inputs(self, m, z, mask):
+        if mask is None:
+            mask = m.new_ones(m.shape[:-1])
+        
+        # m: [..., S, N, C] or [..., N, C]
+        # mask: [..., S, N] or [..., N]
+        mask_bias = (self.inf * (mask - 1))[..., :, None, None, :]
+        
+        z = self.layer_norm_z(z)
+        z = self.linear_z(z)
+        # z: [..., N, N, H] -> [..., H, N, N]
+        z = af3_permute_final_dims(z, (2, 0, 1))
+        # unsqueeze to match sequence dim: [..., 1, H, N, N]
+        z_bias = z.unsqueeze(1)
+        
+        return m, mask_bias, z_bias
+
+    def forward(self, m, z, mask=None):
+        m, mask_bias, z_bias = self._prep_inputs(m, z, mask)
+        m = self.layer_norm_m(m)
+        m = self.mha(m, m, biases=[mask_bias, z_bias])
+        return m
 """
+
