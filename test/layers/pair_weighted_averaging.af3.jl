@@ -1,0 +1,51 @@
+include("../python/alphafold3.jl");
+
+rng = Random.Xoshiro(42)
+
+@testset "AlphaFold3" begin
+    N_seq, N_res, B = 8, 16, 2
+    chn_msa = 32
+    chn_pair = 64
+    head_dim = 8
+    num_heads = 4
+
+    mask_cfg = (
+        ("No mask", nothing),
+        ("Random mask", rand(rng, Bool, N_res, N_res, B)),
+    )
+    
+    @testset "PairWeightedAveraging" begin
+        for (name, mask) in mask_cfg
+            @testset "$name" begin
+                for T in [Float16, Float32, Float64]
+                    m = randn(rng, T, chn_msa, N_seq, N_res, B)
+                    z = randn(rng, T, chn_pair, N_res, N_res, B)
+                    
+                    jl_layer = PairWeightedAveraging(chn_msa, chn_pair, head_dim, num_heads; use_bias=true)
+                    ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
+
+                    y_jl, _ = jl_layer(m, z, mask, ps, st)
+
+                    py_layer = py"AF3MSAPairWeightedAveraging"(chn_msa, head_dim, chn_pair, num_heads)
+                    
+                    sync_af3_pwa!(py_layer, ps)
+            
+                    m_py = to_py(m; swap_batch_dim=true)
+                    z_py = to_py(z; swap_batch_dim=true)
+                    mask_py = isnothing(mask) ? nothing : to_py(permutedims(mask, (2, 1, 3)); swap_batch_dim=true).to(py_dtype(T))
+                    
+                    py_layer.eval()
+                    y_py = py_layer(m_py, z_py, mask=mask_py)
+
+                    @testset "Python parity ($T)" begin
+                        @test y_jl ≈ to_jl(y_py; swap_batch_dim=true)
+                    end
+
+                    @testset "Type-stability ($T)" begin
+                        @test_nowarn @inferred jl_layer(m, z, mask, ps, st)
+                    end
+                end
+            end
+        end
+    end
+end

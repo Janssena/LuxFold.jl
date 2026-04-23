@@ -625,4 +625,74 @@ class AF3OuterProductMean(nn.Module):
         norm = norm + self.eps
 
         return outer / norm
+
+
+class AF3MSAPairWeightedAveraging(nn.Module):
+    def __init__(
+        self,
+        c_in,
+        c_hidden,
+        c_z,
+        no_heads,
+        inf=1e9,
+    ):
+        super().__init__()
+
+        self.c_in = c_in
+        self.c_hidden = c_hidden
+        self.c_z = c_z
+        self.no_heads = no_heads
+        self.inf = inf
+
+        self.layer_norm_m = LayerNorm(self.c_in)
+        self.layer_norm_z = LayerNorm(self.c_z)
+        self.linear_z = Linear(self.c_z, self.no_heads)
+
+        self.linear_v = Linear(self.c_in, self.c_hidden * self.no_heads)
+        self.linear_o = Linear(c_hidden * no_heads, c_in)
+        self.linear_g = Linear(self.c_in, self.c_hidden * self.no_heads)
+
+        self.sigmoid = nn.Sigmoid()
+
+    def _prep_inputs(
+        self,
+        z: torch.Tensor,
+        mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        if mask is None:
+            mask = z.new_ones(z.shape[:-1])
+
+        mask_bias = (self.inf * (mask - 1))[..., None, None, :, :]
+        z = self.layer_norm_z(z)
+        z = self.linear_z(z)
+        z = af3_permute_final_dims(z, (2, 0, 1)).unsqueeze(-4)
+        z = z + mask_bias
+
+        return z
+
+    def _get_pair_weighted_avg(self, m: torch.Tensor, z: torch.Tensor) -> torch.Tensor:
+        v = self.linear_v(m)
+        v = v.view(v.shape[:-1] + (self.no_heads, -1))
+        v = v.transpose(-2, -3)
+
+        o = torch.nn.functional.softmax(z, -1)
+        o = torch.einsum("...hqk,...hkc->...qhc", o, v)
+
+        return o
+
+    def forward(
+        self, m: torch.Tensor, z: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        z = self._prep_inputs(z=z, mask=mask)
+        m = self.layer_norm_m(m)
+        
+        o = self._get_pair_weighted_avg(m=m, z=z)
+        g = self.sigmoid(self.linear_g(m))
+        g = g.view(g.shape[:-1] + (self.no_heads, -1))
+        o = o * g
+        
+        o = o.reshape(o.shape[:-2] + (-1,))
+        o = self.linear_o(o)
+
+        return o
 """

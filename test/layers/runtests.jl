@@ -16,3 +16,8 @@ end
     include("outer_product_mean.af3.jl")
     include("outer_product_mean.boltz2.jl")
 end
+
+@testset "PairWeightedAveraging" begin
+    include("pair_weighted_averaging.af3.jl")
+    include("pair_weighted_averaging.boltz2.jl")
+end

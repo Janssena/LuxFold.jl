@@ -1,37 +1,5 @@
 include("../python/alphafold3.jl");
 
-function sync_af3_attention!(py::PyObject, ps::NamedTuple)
-    if :weight ∈ keys(ps.qkv) # is_fused
-        throw(ErrorException("Not implemented."))
-    else
-        sync_dense!(py.linear_q, ps.qkv.q)
-        sync_dense!(py.linear_k, ps.qkv.k)
-        sync_dense!(py.linear_v, ps.qkv.v)
-    end
-    sync_dense!(py.linear_o, ps.out)
-
-    if !isempty(ps.gate)
-        sync_dense!(py.linear_g, ps.gate)
-    end
-
-    return nothing
-end
-
-function sync_af3_attention_pair_bias!(py::PyObject, ps::NamedTuple)   
-    if isempty(ps.linear_out)
-        sync_layernorm!(py.layer_norm_a, ps.layer_norm_in)
-    else
-        sync_af3_adaln!(py.layer_norm_a, ps.layer_norm_in)
-        sync_dense!(py.linear_ada_out, ps.linear_out)    
-    end
-    sync_layernorm!(py.layer_norm_z, ps.layer_norm_z)
-    sync_dense!(py.linear_z, ps.linear_z)
-
-    sync_af3_attention!(py.mha, ps.mha)
-
-    return nothing
-end
-
 rng = Random.Xoshiro(42)
 
 @testset "AlphaFold3" begin

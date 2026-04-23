@@ -1,25 +1,5 @@
 include("../python/alphafold3.jl");
 
-function copy_weights_to_af3_attention!(
-    py_layer::PyObject,
-    ps::NamedTuple
-)   
-    if :weight ∈ keys(ps.qkv) # is_fused
-        throw(ErrorException("Not implemented."))
-    else
-        sync_dense!(py_layer.linear_q, ps.qkv.q)
-        sync_dense!(py_layer.linear_k, ps.qkv.k)
-        sync_dense!(py_layer.linear_v, ps.qkv.v)
-    end
-    sync_dense!(py_layer.linear_o, ps.out)
-
-    if !isempty(ps.gate)
-        sync_dense!(py_layer.linear_g, ps.gate)
-    end
-
-    return nothing
-end
-
 rng = Random.Xoshiro(42)
 
 @testset "AlphaFold3" begin
@@ -50,7 +30,7 @@ rng = Random.Xoshiro(42)
 
                     py_layer = py"AF3Attention"(chn_in, chn_in, chn_in, head_dim, num_heads)
                     
-                    copy_weights_to_af3_attention!(py_layer, ps)
+                    sync_af3_attention!(py_layer, ps)
             
                     x_py = to_py(x; swap_batch_dim=true)
                     mask_py = to_py(isnothing(mask) ? trues(N, B) : mask; swap_batch_dim=true).to(py_dtype(T))
