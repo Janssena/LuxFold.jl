@@ -117,3 +117,20 @@ function sync_adaln!(py::PyObject, jl::NamedTuple; ref::NamedTuple)
 
     return nothing
 end
+
+sync_af3_opm!(args...) = 
+    sync_opm!(args...; ref=(layer_norm = :layer_norm, linear_1 = :linear_1, linear_2 = :linear_2, linear_out = :linear_out))
+
+sync_af2_opm!(args...) = sync_af3_opm!(args...)
+
+sync_boltz2_opm!(args...) = 
+    sync_opm!(args...; ref=(layer_norm = :norm, linear_1 = :proj_a, linear_2 = :proj_b, linear_out = :proj_o))
+
+function sync_opm!(py::PyObject, jl::NamedTuple; ref::NamedTuple)
+    sync_layernorm!(py[ref.layer_norm], jl.layer_norm)
+    sync_dense!(py[ref.linear_1], jl.linear1)
+    sync_dense!(py[ref.linear_2], jl.linear2)
+    sync_dense!(py[ref.linear_out], jl.linear_out)
+
+    return nothing
+end

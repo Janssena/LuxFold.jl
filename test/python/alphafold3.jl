@@ -228,7 +228,6 @@ class AF3AttentionPairBias(nn.Module):
         use_ada_layer_norm: bool = False,
         gating: bool = True,
         inf=1e9,
-        linear_init_params = None,
     ):
         # Args:
         #     c_q:
@@ -262,35 +261,27 @@ class AF3AttentionPairBias(nn.Module):
 
         self.use_ada_layer_norm = use_ada_layer_norm
 
-        if linear_init_params is None:
-            linear_init_params = (
-                lin_init.diffusion_att_pair_bias_init
-                if self.use_ada_layer_norm
-                else lin_init.att_pair_bias_init
-            )
-
         if self.use_ada_layer_norm:
-            self.layer_norm_a = AdaLN(
-                c_a=self.c_q, c_s=self.c_s, linear_init_params=linear_init_params.ada_ln
+            self.layer_norm_a = AF3AdaLN(
+                c_a=self.c_q, c_s=self.c_s
             )
 
             self.linear_ada_out = Linear(
-                self.c_s, self.c_q, **linear_init_params.linear_ada_out
+                self.c_s, self.c_q
             )
         else:
             self.layer_norm_a = LayerNorm(c_in=self.c_q)
 
-        self.layer_norm_z = LayerNorm(self.c_z, **linear_init_params.layer_norm_z)
-        self.linear_z = Linear(self.c_z, no_heads, **linear_init_params.linear_z)
+        self.layer_norm_z = LayerNorm(self.c_z)
+        self.linear_z = Linear(self.c_z, no_heads)
 
-        self.mha = Attention(
+        self.mha = AF3Attention(
             c_q=c_q,
             c_k=c_k,
             c_v=c_v,
             c_hidden=c_hidden,
             no_heads=no_heads,
             gating=gating,
-            linear_init_params=linear_init_params.mha,
         )
 
         self.sigmoid = nn.Sigmoid()
@@ -333,7 +324,7 @@ class AF3AttentionPairBias(nn.Module):
         z = self.linear_z(z)
 
         # [*, no_heads, N, N]
-        z = permute_final_dims(z, [2, 0, 1])
+        z = af3_permute_final_dims(z, [2, 0, 1])
 
         biases.append(z)
 
@@ -379,6 +370,7 @@ class AF3AttentionPairBias(nn.Module):
         reshape_for_ds_kernel = (
             use_deepspeed_evo_attention or use_cueq_triangle_kernels
         ) and len(batch_dims) == 1
+
         if reshape_for_ds_kernel:
             a = a.unsqueeze(1)
             biases = [b.unsqueeze(1) for b in biases]
@@ -387,10 +379,10 @@ class AF3AttentionPairBias(nn.Module):
             q_x=a,
             kv_x=a,
             biases=biases,
-            use_deepspeed_evo_attention=use_deepspeed_evo_attention,
-            use_cueq_triangle_kernels=use_cueq_triangle_kernels,
-            use_lma=use_lma,
-            use_high_precision=use_high_precision_attention,
+            # use_deepspeed_evo_attention=use_deepspeed_evo_attention,
+            # use_cueq_triangle_kernels=use_cueq_triangle_kernels,
+            # use_lma=use_lma,
+            # use_high_precision=use_high_precision_attention,
         )
 
         if reshape_for_ds_kernel:
@@ -473,10 +465,10 @@ class CrossAttentionPairBias(nn.Module):
             )
 
         if self.use_ada_layer_norm:
-            self.layer_norm_a_q = AdaLN(
+            self.layer_norm_a_q = AF3AdaLN(
                 c_a=self.c_q, c_s=self.c_s, linear_init_params=linear_init_params.ada_ln
             )
-            self.layer_norm_a_k = AdaLN(
+            self.layer_norm_a_k = AF3AdaLN(
                 c_a=self.c_q, c_s=self.c_s, linear_init_params=linear_init_params.ada_ln
             )
 
@@ -529,7 +521,7 @@ class CrossAttentionPairBias(nn.Module):
         z = self.linear_z(z)
 
         # [*, no_heads, N, N]
-        z = permute_final_dims(z, [2, 0, 1])
+        z = af3_permute_final_dims(z, [2, 0, 1])
 
         biases.append(z)
 
@@ -595,4 +587,42 @@ class CrossAttentionPairBias(nn.Module):
             a = self.sigmoid(self.linear_ada_out(s)) * a
 
         return a
+
+class AF3OuterProductMean(nn.Module):
+    def __init__(self, c_m, c_z, c_hidden, eps=1e-3):
+        super().__init__()
+        self.c_m = c_m
+        self.c_z = c_z
+        self.c_hidden = c_hidden
+        self.eps = eps
+
+        self.layer_norm = nn.LayerNorm(c_m)
+        self.linear_1 = nn.Linear(c_m, c_hidden)
+        self.linear_2 = nn.Linear(c_m, c_hidden)
+        self.linear_out = nn.Linear(c_hidden ** 2, c_z)
+
+    def forward(self, m, mask=None):
+        if mask is None:
+            mask = m.new_ones(m.shape[:-1])
+
+        ln = self.layer_norm(m)
+        mask = mask.unsqueeze(-1)
+        a = self.linear_1(ln) * mask
+        b = self.linear_2(ln) * mask
+
+        a = a.transpose(-2, -3)
+        b = b.transpose(-2, -3)
+
+        # [*, N_res, N_res, C, C]
+        outer = torch.einsum("...bac,...dae->...bdce", a, b)
+        # [*, N_res, N_res, C * C]
+        outer = outer.reshape(outer.shape[:-2] + (-1,))
+        # [*, N_res, N_res, C_z]
+        outer = self.linear_out(outer)
+
+        # [*, N_res, N_res, 1]
+        norm = torch.einsum("...abc,...adc->...bdc", mask, mask)
+        norm = norm + self.eps
+
+        return outer / norm
 """
