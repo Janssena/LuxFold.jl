@@ -10,7 +10,7 @@ Attention layer with pair bias support, specializing for global or local attenti
 - `mha`: MultiHeadAttention layer. Should be one of TriAttnCore or AttnCore.
 - `linear_out`: Linear projection of output.
 """
-struct AttentionPairBias{LNI,LNZ,LZ,MHA,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_in,:layer_norm_z,:linear_z,:mha,:linear_out)}
+struct AttentionPairBias{LNI,LNZ,LZ,MHA,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_in, :layer_norm_z, :linear_z, :mha, :linear_out)}
     layer_norm_in::LNI
     layer_norm_z::LNZ
     linear_z::LZ
@@ -24,8 +24,8 @@ function AttentionPairBias(
     head_dim::Int,
     num_heads::Int;
     rank::Int=3,
-    chn_cond::Union{Nothing, Int} = nothing, # if isInt, then use AdaLN 
-    use_gate::Bool = true,
+    chn_cond::Union{Nothing,Int}=nothing, # if isInt, then use AdaLN 
+    use_gate::Bool=true,
     use_bias=false,
     affine=true,
     kwargs...
@@ -35,8 +35,8 @@ function AttentionPairBias(
     use_bias = resolve_defaults(use_bias, (:layer_norm_in, :layer_norm_z, :linear_z, :mha, :linear_out))
 
     if isnothing(chn_cond)
-        shape = (chn_in, ntuple(one, rank-2)...)
-        layer_norm_in = if !affine.layer_norm_in || use_bias.layer_norm_in 
+        shape = (chn_in, ntuple(one, rank - 2)...)
+        layer_norm_in = if !affine.layer_norm_in || use_bias.layer_norm_in
             Lux.LayerNorm(shape; dims=1, affine=affine.layer_norm_in)
         else
             LayerNormNoBias(shape; dims=1)
@@ -73,15 +73,15 @@ end
 (l::AttentionPairBias)(x, z, ps, st) = l(x, z, nothing, nothing, ps, st)
 (l::AttentionPairBias)(x, z, ::Nothing, ps, st) = l(x, z, nothing, nothing, ps, st)
 
-(l::AttentionPairBias)(x, z, mask::AbstractArray{Bool}, ps, st) = 
+(l::AttentionPairBias)(x, z, mask::AbstractArray{Bool}, ps, st) =
     l(x, z, nothing, mask, ps, st)
 
-(l::AttentionPairBias)(x, z, cond::AbstractArray{<:AbstractFloat}, ps, st) = 
+(l::AttentionPairBias)(x, z, cond::AbstractArray{<:AbstractFloat}, ps, st) =
     l(x, z, cond, nothing, ps, st)
 
 function (l::AttentionPairBias)(x, z, ::Nothing, mask, ps, st)
     x, layer_norm_in = l.layer_norm_in(x, ps.layer_norm_in, st.layer_norm_in)
-    
+
     z, layer_norm_z = l.layer_norm_z(z, ps.layer_norm_z, st.layer_norm_z)
     bias, linear_z = l.linear_z(z, ps.linear_z, st.linear_z)
 
@@ -99,16 +99,16 @@ function (l::AttentionPairBias)(x, z, cond::AbstractArray, mask, ps, st)
     (attn, scores), mha = l.mha(x, bias, mask, ps.mha, st.mha)
 
     g, linear_out = l.linear_out(cond, ps.linear_out, st.linear_out)
-    
+
     y = @. g * attn
-    
+
     return (y, scores), (; layer_norm_z, linear_z, layer_norm_in, mha, linear_out)
 end
 
 function MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads; kwargs...)
-    return AttentionPairBias(chn_in, chn_z, head_dim, num_heads; 
+    return AttentionPairBias(chn_in, chn_z, head_dim, num_heads;
         rank=4,
-        chn_cond=nothing, 
+        chn_cond=nothing,
         use_bias=(linear_z=true, mha=false, layer_norm_in=true, layer_norm_z=true, linear_out=false),
         kwargs...)
 end
