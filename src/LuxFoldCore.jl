@@ -13,6 +13,8 @@ export AdaLN, LayerNormNoBias, Activation, ReLU
 
 include("layers/attention.jl")
 include("layers/attention_pair_bias.jl")
-export Attention, AttentionPairBias
+include("layers/outer_product_mean.jl")
+include("layers/pair_weighted_averaging.jl")
+export Attention, AttentionPairBias, OuterProductMean, PairWeightedAveraging
 
 end # module LuxFoldCore

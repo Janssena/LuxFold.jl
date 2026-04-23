@@ -16,13 +16,13 @@ from the triangle_attention vs Lux.scaled_dot_product_attention calls.
 """  
 function Attention(
     chn_q::Int, chn_k::Int, chn_v::Int, head_dim::Int, num_heads::Int; 
-    use_bias=false, fuse_qkv::Bool=true, should_gate=static(true)
+    use_bias=false, fuse_qkv::Bool=true, use_gate=static(true)
 )
     use_bias = resolve_defaults(use_bias, (:qkv, :gate, :out))
     
-    should_gate_static = static(should_gate)
+    use_gate_static = static(use_gate)
 
-    gate = if known(should_gate_static)
+    gate = if known(use_gate_static)
         Lux.Dense(chn_q => num_heads * head_dim, Lux.sigmoid; use_bias=use_bias.gate)
     else
         Lux.NoOpLayer()
@@ -30,7 +30,7 @@ function Attention(
 
     if fuse_qkv
         @assert chn_q == chn_k == chn_v "Input channels for q, k, and v should be equal when fuse_qkv=true."
-        qkv = Lux.Dense(chn_in => 3 * num_heads * head_dim)
+        qkv = Lux.Dense(chn_q => 3 * num_heads * head_dim)
     else
         qkv = Lux.BranchLayer(
             q = Lux.Dense(chn_q => num_heads * head_dim; use_bias=use_bias.qkv),
@@ -40,7 +40,7 @@ function Attention(
     end
 
     return Attention(
-        should_gate_static,
+        use_gate_static,
         qkv,
         gate,
         Lux.Dense(num_heads * head_dim => chn_q; use_bias=use_bias.out),
