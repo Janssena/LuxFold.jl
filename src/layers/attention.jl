@@ -75,19 +75,21 @@ end
 (l::Attention)(x::Union{<:Tuple,AbstractArray{T}}, mask::AbstractArray{Bool}, ps, st) where T =
     l(x, nothing, mask, ps, st)
 
+# x is either [C, N, B] or [C, N, S, B]
 function (l::Attention)(x, bias, mask, ps, st)
     (q, k, v), st_qkv = _prep_qkv(l.qkv, x, ps.qkv, st.qkv; head_dim=l.head_dim, num_heads=l.num_heads)
-    mask, bias = _prep_mask(mask), _prep_bias(bias)
+    mask, bias = _prep_mask(mask), _prep_bias(bias, q)
     
+    # S is the MSA dimension
     attn, scores = Lux.scaled_dot_product_attention(
-        q, k, v; # [head_dim, H, N, B]
+        q, k, v; # [head_dim, H, N, B] or [head_dim, H, N, S, B]
         head_dim=1, token_dim=3,
-        mask, # [N, 1, 1, B]
-        bias # [N, N, H, B]
-    )
+        mask, # [N, 1, 1, B] or [N, 1, 1, S, B]
+        bias # [N, N, H, B] or [N, N, H, 1, B]
+    ) # attn is [head_dim, H, N, B] or [head_dim, H, N, S, B]
         
-    _, _, N, B = size(q)
-    attn = reshape(attn, l.head_dim * l.num_heads, N, B)
+    _dims = size(attn)[3:end] # [N, B] or [N, S, B] dims
+    attn = reshape(attn, l.head_dim * l.num_heads, _dims...)
     attn, st_gate = _gate_maybe(l.gate, attn, x, ps.gate, st.gate)
 
     y, st_out = l.out(attn, ps.out, st.out)
@@ -97,12 +99,12 @@ end
 
 # fused qkv
 function _prep_qkv(qkv::Lux.Dense, x::AbstractArray, ps, st; head_dim, num_heads)
-    _qkv, st_qkv = qkv(x, ps, st)# [3 * H * head_dim, N, B]
+    _qkv, st_qkv = qkv(x, ps, st)# [3 * H * head_dim, N, B] or [3 * H * head_dim, N, N, B]
 
     _qkv_reshaped = reshape(_qkv, head_dim, num_heads, 3, size(_qkv)[2:end]...)
-    q = view(_qkv_reshaped, :, :, 1, :, :) # [H, head_dim, N, B]
-    k = view(_qkv_reshaped, :, :, 2, :, :) # [H, head_dim, N, B]
-    v = view(_qkv_reshaped, :, :, 3, :, :) # [H, head_dim, N, B]
+    q = view(_qkv_reshaped, :, :, 1, ntuple(_ -> Colon(), ndims(_qkv_reshaped)-3)...) # [H, head_dim, N, B] or [H, head_dim, N, N, B]
+    k = view(_qkv_reshaped, :, :, 2, ntuple(_ -> Colon(), ndims(_qkv_reshaped)-3)...) # [H, head_dim, N, B] or [H, head_dim, N, N, B]
+    v = view(_qkv_reshaped, :, :, 3, ntuple(_ -> Colon(), ndims(_qkv_reshaped)-3)...) # [H, head_dim, N, B] or [H, head_dim, N, N, B]
     return (q, k, v), st_qkv
 end
 
@@ -113,8 +115,8 @@ function _prep_qkv(qkv::Lux.Chain, x::Tuple, ps, st; head_dim, num_heads)
 
     _kv_reshaped = reshape(_kv, head_dim, num_heads, 2, size(_kv)[2:end]...)
     q = reshape(q, head_dim, num_heads, size(q)[2:end]...) # [H, head_dim, N, B]
-    k = view(_kv_reshaped, :, :, 1, :, :) # [H, head_dim, N, B]
-    v = view(_kv_reshaped, :, :, 2, :, :) # [H, head_dim, N, B]
+    k = view(_kv_reshaped, :, :, 1, ntuple(_ -> Colon(), ndims(_kv_reshaped)-3)...) # [H, head_dim, N, B] or [H, head_dim, N, N, B]
+    v = view(_kv_reshaped, :, :, 2, ntuple(_ -> Colon(), ndims(_kv_reshaped)-3)...) # [H, head_dim, N, B] or [H, head_dim, N, N, B]
     return (q, k, v), (q=st_q, kv=st_kv)
 end
 
@@ -122,9 +124,9 @@ end
 function _prep_qkv(qkv::Lux.BranchLayer, x::AbstractArray, ps, st; head_dim, num_heads)
     (q, k, v), st_qkv = qkv(x, ps, st)
 
-    q = reshape(q, head_dim, num_heads, size(q)[2:end]...) # [head_dim, H, N, B]
-    k = reshape(k, head_dim, num_heads, size(k)[2:end]...) # [head_dim, H, N, B]
-    v = reshape(v, head_dim, num_heads, size(v)[2:end]...) # [head_dim, H, N, B]
+    q = reshape(q, head_dim, num_heads, size(q)[2:end]...) # [H, head_dim, N, B] or [H, head_dim, N, N, B]
+    k = reshape(k, head_dim, num_heads, size(k)[2:end]...) # [H, head_dim, N, B] or [H, head_dim, N, N, B]
+    v = reshape(v, head_dim, num_heads, size(v)[2:end]...) # [H, head_dim, N, B] or [H, head_dim, N, N, B]
     return (q, k, v), st_qkv
 end
 
@@ -146,15 +148,26 @@ function _prep_mask(mask::AbstractArray{T,2}) where T
     return reshape(mask, N, 1, 1, B)
 end
 
+function _prep_mask(mask::AbstractArray{T,3}) where T
+    N, S, B = size(mask)
+    return reshape(mask, N, 1, 1, S, B)
+end
+
 _prep_bias(::Nothing) = nothing
 function _prep_bias(bias::AbstractArray{T,3}) where T
     H, N, B = size(bias)
     return reshape(permutedims(bias, (2, 1, 3)), 1, N, H, B)
 end
 
-function _prep_bias(bias::AbstractArray{T,4}) where T
-    # bias: [H, Ni, Nj, B]
+function _prep_bias(bias::AbstractArray{T,4}, ::AbstractArray{T,4}) where T
+    # bias: [H, Ni, Nj, B] -> q, k, v are 4D
     return permutedims(bias, (3, 2, 1, 4)) # -> [Nj, Ni, H, B]
+end
+
+function _prep_bias(bias::AbstractArray{T,4}, ::AbstractArray{T,5}) where T
+    # bias: [H, Ni, Nj, B] -> q, k, v are 5D
+    H, Ni, Nj, B = size(bias)
+    return reshape(permutedims(bias, (3, 2, 1, 4)), Nj, Ni, H, 1, B) # -> [Nj, Ni, H, 1, B]
 end
 
 _gate_maybe(::Lux.NoOpLayer, x, g, ps, st) = x, st
