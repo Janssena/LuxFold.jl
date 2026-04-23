@@ -2,6 +2,9 @@ py"""
 import torch
 import torch.nn as nn
 from torch.nn import Linear, LayerNorm
+from typing import Optional
+from torch import Tensor
+from einops.layers.torch import Rearrange
 from functools import partial
 
 LinearNoBias = partial(Linear, bias=False)
@@ -87,6 +90,88 @@ class Boltz2PairWeightedAveraging(nn.Module):
         o = o * g
         o = o.reshape(*o.shape[:-2], -1)
         o = self.o_proj(o)
+
+        return o
+
+
+class AttentionPairBias(nn.Module):
+    # Attention pair bias layer.
+
+    def __init__(
+        self,
+        c_s: int,
+        c_z: Optional[int] = None,
+        num_heads: Optional[int] = None,
+        inf: float = 1e6,
+        compute_pair_bias: bool = True,
+    ) -> None:
+        super().__init__()
+
+        assert c_s % num_heads == 0
+
+        self.c_s = c_s
+        self.num_heads = num_heads
+        self.head_dim = c_s // num_heads
+        self.inf = inf
+
+        self.proj_q = nn.Linear(c_s, c_s, bias=False)
+
+        self.proj_k = nn.Linear(c_s, c_s, bias=False)
+        self.proj_v = nn.Linear(c_s, c_s, bias=False)
+        self.proj_g = nn.Linear(c_s, c_s, bias=False)
+
+        self.compute_pair_bias = compute_pair_bias
+        if compute_pair_bias:
+            self.proj_z = nn.Sequential(
+                nn.LayerNorm(c_z),
+                nn.Linear(c_z, num_heads, bias=False),
+                Rearrange("b ... h -> b h ..."),
+            )
+        else:
+            self.proj_z = Rearrange("b ... h -> b h ...")
+
+        self.proj_o = nn.Linear(c_s, c_s, bias=False)
+
+    def forward(
+        self,
+        s: Tensor,
+        z: Tensor,
+        mask: Tensor,
+        k_in: Tensor,
+        multiplicity: int = 1,
+    ) -> Tensor:
+        B = s.shape[0]
+
+        # Compute projections
+        q = self.proj_q(s).view(B, -1, self.num_heads, self.head_dim)
+        k = self.proj_k(k_in).view(B, -1, self.num_heads, self.head_dim)
+        v = self.proj_v(k_in).view(B, -1, self.num_heads, self.head_dim)
+
+        bias = self.proj_z(z)
+        bias = bias.repeat_interleave(multiplicity, 0)
+
+        g = self.proj_g(s).sigmoid()
+
+        with torch.autocast("cuda", enabled=False):
+            # Compute attention weights
+            attn = torch.einsum("...ihd,...jhd->...hij", q.float(), k.float())
+            attn = attn / (self.head_dim**0.5) + bias.float()
+            
+            # Match Julia's key-only masking if mask is (B, N)
+            if len(mask.shape) == 2:
+                mask_val = mask.view(mask.shape[0], 1, 1, mask.shape[1])
+            else:
+                mask_val = mask.unsqueeze(-3)
+                
+            attn = attn + (1 - mask_val.float()) * -self.inf
+            attn = attn.softmax(dim=-1)
+
+
+            # Compute output
+            o = torch.einsum("...hij,...jhd->...ihd", attn, v.float()).to(v.dtype)
+
+        o = o.reshape(B, -1, self.c_s)
+        o = self.proj_o(g * o)
 
         return o
 """

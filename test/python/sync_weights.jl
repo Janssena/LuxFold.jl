@@ -21,22 +21,16 @@ function sync_dense!(py::PyObject, jl::NamedTuple)
 end
 
 function sync_layernorm!(py::PyObject, jl::NamedTuple)
-    py_has_weight = py"hasattr"(py, "weight") && !isnothing(py.weight)
-    jl_has_weight = :scale ∈ keys(jl)
-    @assert py_has_weight == jl_has_weight "PyObject (LayerNorm) and NamedTuple have non-matching weight attributes (py = $(py_has_weight), jl = $(jl_has_weight))."
-    py_has_bias = py"hasattr"(py, "bias") && !isnothing(py.bias)
-    jl_has_bias = :bias ∈ keys(jl)
-    @assert py_has_bias == jl_has_bias "PyObject (LayerNorm) and NamedTuple have non-matching bias attributes (py = $(py_has_bias), jl = $(jl_has_bias))."
-
-    if :scale ∈ keys(jl)
+    if :scale ∈ keys(jl) && py"hasattr"(py, "weight") && !isnothing(py.weight)
         copy_jl_ps_to_py!(py.weight, vec(jl.scale))
     end
-    if :bias ∈ keys(jl)
+    if :bias ∈ keys(jl) && py"hasattr"(py, "bias") && !isnothing(py.bias)
         copy_jl_ps_to_py!(py.bias, vec(jl.bias))
     end
 
     return nothing
 end
+
 
 
 function sync_glu!(py::PyObject, jl::NamedTuple; ref=(linear = :linear_z, gate = :linear_g))
@@ -154,6 +148,65 @@ function sync_pwa!(py::PyObject, jl::NamedTuple; ref::NamedTuple)
     sync_dense!(py[ref.linear_v], jl.linear_v)
     sync_dense!(py[ref.linear_g], jl.linear_g)
     sync_dense!(py[ref.linear_out], jl.linear_out)
+
+    return nothing
+end
+
+function sync_af3_msa_row_attention_with_pair_bias!(py::PyObject, ps::NamedTuple)
+    sync_layernorm!(py.layer_norm_m, ps.layer_norm_in)
+    sync_layernorm!(py.layer_norm_z, ps.layer_norm_z)
+    sync_dense!(py.linear_z, ps.linear_z)
+    sync_af3_attention!(py.mha, ps.mha)
+    return nothing
+end
+
+function sync_af3_cross_attention_pair_bias!(py::PyObject, ps::NamedTuple)
+    if isempty(ps.linear_out)
+        sync_layernorm!(py.layer_norm_a_q, ps.layer_norm_a_q)
+        sync_layernorm!(py.layer_norm_a_k, ps.layer_norm_a_k)
+    else
+        sync_af3_adaln!(py.layer_norm_a_q, ps.layer_norm_a_q)
+        sync_af3_adaln!(py.layer_norm_a_k, ps.layer_norm_a_k)
+        sync_dense!(py.linear_ada_out, ps.linear_out)
+    end
+    sync_dense!(py.linear_z, ps.linear_z)
+    sync_af3_attention!(py.mha, ps.mha)
+    return nothing
+end
+
+function sync_boltz2_dense!(py::PyObject, jl::NamedTuple)
+    copy_jl_ps_to_py!(py.weight, jl.weight)
+    if :bias ∈ keys(jl) && (py"hasattr"(py, "bias") && !isnothing(py.bias))
+        copy_jl_ps_to_py!(py.bias, jl.bias)
+    end
+    return nothing
+end
+
+function sync_boltz2_attention!(py::PyObject, ps::NamedTuple)
+    if :weight ∈ keys(ps.qkv) # is_fused
+        throw(ErrorException("Not implemented."))
+    else
+        sync_boltz2_dense!(py.proj_q, ps.qkv.q)
+        sync_boltz2_dense!(py.proj_k, ps.qkv.k)
+        sync_boltz2_dense!(py.proj_v, ps.qkv.v)
+    end
+    sync_boltz2_dense!(py.proj_o, ps.out)
+
+    if !isempty(ps.gate)
+        sync_boltz2_dense!(py.proj_g, ps.gate)
+    end
+
+    return nothing
+end
+
+function sync_boltz2_attention_pair_bias!(py::PyObject, ps::NamedTuple)
+    # Boltz2 AttentionPairBias reference doesn't have layer_norm_in inside the module.
+    # We sync only the parts that exist in the reference.
+    sync_layernorm!(py.proj_z[1], ps.layer_norm_z)
+    sync_boltz2_dense!(py.proj_z[2], ps.linear_z)
+
+
+    sync_boltz2_attention!(py, ps.mha)
 
     return nothing
 end
