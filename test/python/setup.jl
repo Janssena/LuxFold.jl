@@ -40,7 +40,9 @@ end
 
 function sync_dense!(py::PyObject, jl::NamedTuple)
     @assert py"hasattr"(py, "weight") "PyObject (Linear) does not have weight attribute."
-    @assert (py"hasattr"(py, "bias") && !isnothing(py.bias)) == (:bias ∈ keys(jl)) "PyObject (Linear) and NamedTuple have non-matching bias attributes."
+    py_has_bias = py"hasattr"(py, "bias") && !isnothing(py.bias)
+    jl_has_bias = :bias ∈ keys(jl)
+    @assert py_has_bias == jl_has_bias "PyObject (Linear) and NamedTuple have non-matching bias attributes (py = $(py_has_bias), jl = $(jl_has_bias))."
 
     copy_jl_ps_to_py!(py.weight, jl.weight)
     if :bias ∈ keys(jl) && (py"hasattr"(py, "bias") && !isnothing(py.bias))
@@ -51,8 +53,12 @@ function sync_dense!(py::PyObject, jl::NamedTuple)
 end
 
 function sync_layernorm!(py::PyObject, jl::NamedTuple)
-    @assert (py"hasattr"(py, "weight") && !isnothing(py.weight)) == (:scale ∈ keys(jl)) "PyObject (LayerNorm) and NamedTuple have non-matching weight attributes."
-    @assert (py"hasattr"(py, "bias") && !isnothing(py.bias)) == (:bias ∈ keys(jl)) "PyObject (LayerNorm) and NamedTuple have non-matching bias attributes."
+    py_has_weight = py"hasattr"(py, "weight") && !isnothing(py.weight)
+    jl_has_weight = :scale ∈ keys(jl)
+    @assert py_has_weight == jl_has_weight "PyObject (LayerNorm) and NamedTuple have non-matching weight attributes (py = $(py_has_weight), jl = $(jl_has_weight))."
+    py_has_bias = py"hasattr"(py, "bias") && !isnothing(py.bias)
+    jl_has_bias = :bias ∈ keys(jl)
+    @assert py_has_bias == jl_has_bias "PyObject (LayerNorm) and NamedTuple have non-matching bias attributes (py = $(py_has_bias), jl = $(jl_has_bias))."
 
     if :scale ∈ keys(jl)
         copy_jl_ps_to_py!(py.weight, vec(jl.scale))

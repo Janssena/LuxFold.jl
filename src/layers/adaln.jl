@@ -7,7 +7,6 @@ end
 
 AdaLN(a_s::Pair; kwargs...) = AdaLN(a_s.first, a_s.second; kwargs...)
 
-
 function AdaLN(chn_a::Int, chn_s::Int; rank::Int=3, epsilon=1f-5, affine=(layer_norm_a = false, layer_norm_s = true), use_bias=false)
     @assert rank > 1 "rank should be greater than 1."
     use_bias = resolve_defaults(use_bias, (:layer_norm_a,:layer_norm_s,:gate,:shift))

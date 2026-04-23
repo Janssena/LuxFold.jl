@@ -394,7 +394,7 @@ class AF3AttentionPairBias(nn.Module):
         return a
 
 
-class CrossAttentionPairBias(nn.Module):
+class AF3CrossAttentionPairBias(nn.Module):
     # Attention layer with pair bias and neighborhood mask.
     # Unlike AttentionPairBias, inputs are blocked for sequence-local attention
     # and AdaLN is applied by default.
