@@ -4,12 +4,11 @@
 Attention layer with pair bias support, specializing for global or local attention via static dispatch.
 
 # Arguments
-- `ln_a`: Input LayerNorm or AdaLN.
-- `ln_z`: Pair representation LayerNorm.
+- `layer_norm_in`: Input LayerNorm or AdaLN.
+- `layer_norm_z`: Pair representation LayerNorm.
+- `linear_z`: Linear projection for Pair bias.
 - `mha`: MultiHeadAttention layer. Should be one of TriAttnCore or AttnCore.
-- `head_dim`: Dimension of each attention head.
-- `num_heads`: Number of attention heads.
-- `block_size`: Size of spatial blocks for local attention.
+- `linear_out`: Linear projection of output.
 """
 struct AttentionPairBias{LNI,LNZ,LZ,MHA,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_in,:layer_norm_z,:linear_z,:mha,:linear_out)}
     layer_norm_in::LNI
@@ -19,30 +18,24 @@ struct AttentionPairBias{LNI,LNZ,LZ,MHA,LO} <: Lux.AbstractLuxContainerLayer{(:l
     linear_out::LO
 end
 
-# c_q: int,         # CHN_IN
-# c_k: int,         # CHN_IN
-# c_v: int,         # CHN_IN
-# c_s: int,         # CHN_COND
-# c_z: int,         # CHN_PAIR
-# c_hidden: int,    # HEAD_DIM
-# no_heads: int,    # NUM_HEADS
-
 function AttentionPairBias(
     chn_in::Int,
     chn_z::Int,
     head_dim::Int,
     num_heads::Int;
+    rank::Int=3,
     chn_cond::Union{Nothing, Int} = nothing, # if isInt, then use AdaLN 
     use_gate::Bool = true,
     use_bias=false,
     affine=true,
     kwargs...
 )
+    @assert rank == 3 || rank == 4 "rank should be either 3 or 4."
     affine = resolve_defaults(affine, (:layer_norm_in, :layer_norm_z))
     use_bias = resolve_defaults(use_bias, (:layer_norm_in, :layer_norm_z, :linear_z, :mha, :linear_out))
 
     if isnothing(chn_cond)
-        shape = (chn_in, 1)
+        shape = (chn_in, ntuple(one, rank-2))
         layer_norm_in = if !affine.layer_norm_in || use_bias.layer_norm_in 
             Lux.LayerNorm(shape; dims=1, affine=affine.layer_norm_in)
         else
@@ -50,7 +43,7 @@ function AttentionPairBias(
         end
         linear_out = Lux.NoOpLayer()
     else
-        layer_norm_in = AdaLN(chn_in => chn_cond; affine=affine.layer_norm_in, rank=3, use_bias=use_bias.layer_norm_in)
+        layer_norm_in = AdaLN(chn_in => chn_cond; rank, affine=affine.layer_norm_in, use_bias=use_bias.layer_norm_in)
         linear_out = Lux.Dense(chn_cond => chn_in, Lux.sigmoid; use_bias=use_bias.linear_out)
     end
 
@@ -110,4 +103,12 @@ function (l::AttentionPairBias)(x, z, cond::AbstractArray, mask, ps, st)
     y = @. g * attn
     
     return (y, scores), (; layer_norm_z, linear_z, layer_norm_in, mha, linear_out)
+end
+
+function MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads; kwargs...)
+    return AttentionPairBias(chn_in, chn_z, head_dim, num_heads; 
+        rank=4,
+        chn_cond=nothing, 
+        use_bias=(linear_z=true, mha=false, layer_norm_in=true, layer_norm_z=true, linear_out=false),
+        kwargs...)
 end
