@@ -1,8 +1,12 @@
-function copy_jl_ps_to_py!(py::PyObject, jl::AbstractArray{T}; swap_batch_dim=false) where T 
-    @assert py"type"(py) == torch.nn.Parameter "Passed PyObject is not a torch.nn.Parameter"
+function copy_jl_ps_to_py!(py, jl::AbstractArray{T}; swap_batch_dim=false) where T
+    if isnothing(py)
+        @error "copy_jl_ps_to_py! received nothing for py. jl keys: $(keys(jl))"
+        return nothing
+    end
+    @assert py"type"(py) == torch.nn.Parameter "Passed PyObject is not a torch.nn.Parameter (got $(py"type"(py)))"
     @assert py.shape == size(jl) "Shape of py $(py.shape) and jl $(size(jl)) do not match."
     py.data = to_py(jl; swap_batch_dim)
-    
+
     return nothing
 end
 
@@ -21,10 +25,18 @@ function sync_dense!(py::PyObject, jl::NamedTuple)
 end
 
 function sync_layernorm!(py::PyObject, jl::NamedTuple)
-    if :scale ∈ keys(jl) && py"hasattr"(py, "weight") && !isnothing(py.weight)
+    py_has_weight = py"hasattr"(py, "weight") && !isnothing(py.weight)
+    jl_has_weight = :scale ∈ keys(jl)
+    @assert py_has_weight == jl_has_weight "PyObject (LayerNorm) and NamedTuple have non-matching weight attributes (py = $(py_has_weight), jl = $(jl_has_weight))."
+
+    py_has_bias = (py"hasattr"(py, "bias") && !isnothing(py.bias)) || (py"hasattr"(py, "offset") && !isnothing(py.offset))
+    jl_has_bias = :bias ∈ keys(jl)
+    @assert py_has_bias == jl_has_bias "PyObject (LayerNorm) and NamedTuple have non-matching bias attributes (py = $(py_has_bias), jl = $(jl_has_bias))."
+
+    if jl_has_weight
         copy_jl_ps_to_py!(py.weight, vec(jl.scale))
     end
-    if :bias ∈ keys(jl) && py"hasattr"(py, "bias") && !isnothing(py.bias)
+    if jl_has_bias
         copy_jl_ps_to_py!(py.bias, vec(jl.bias))
     end
 
@@ -32,10 +44,9 @@ function sync_layernorm!(py::PyObject, jl::NamedTuple)
 end
 
 
-
-function sync_glu!(py::PyObject, jl::NamedTuple; ref=(linear = :linear_z, gate = :linear_g))
+function sync_glu!(py::PyObject, jl::NamedTuple; ref=(linear=:linear_z, gate=:linear_g))
     @assert py"hasattr"(py, ref.linear) "PyObject does not have the referenced linear attribute ($(ref.linear))."
-    @assert py"hasattr"(py, ref.gate) "PyObject does not have the referenced gate attribute ($(ref.gate))." 
+    @assert py"hasattr"(py, ref.gate) "PyObject does not have the referenced gate attribute ($(ref.gate))."
     @assert (py"hasattr"(py[ref.linear], "bias") && !isnothing(py[ref.linear].bias)) == (:bias ∈ keys(jl.linear)) "PyObject linear and NamedTuple have non-matching bias attributes."
     gate_should_have_bias_keys = isempty(jl.gate) ? (:bias ∈ keys(jl.linear)) : (:bias ∈ keys(jl.gate))
     @assert (py"hasattr"(py[ref.gate], "bias") && !isnothing(py[ref.gate].bias)) == gate_should_have_bias_keys "PyObject gate and NamedTuple have non-matching bias attributes."
@@ -56,26 +67,26 @@ function _unfuse(jl::NamedTuple{(:linear, :gate)})
     chn = size(w, 1) ÷ 2
 
     ps = (
-        linear = (weight = view(w, 1:chn, :), ),
-        gate = (weight = view(w, chn+1:2*chn, :), ),
+        linear=(weight=view(w, 1:chn, :),),
+        gate=(weight=view(w, chn+1:2*chn, :),),
     )
 
     if :bias ∈ keys(jl.linear)
         b = jl.linear.bias
         ps = (
-            linear = merge(ps.linear, (bias = view(b, 1:chn), )),
-            gate = merge(ps.gate, (bias = view(b, chn+1:2*chn), )),
+            linear=merge(ps.linear, (bias=view(b, 1:chn),)),
+            gate=merge(ps.gate, (bias=view(b, chn+1:2*chn),)),
         )
     end
 
     return ps
 end
 
-sync_af3_adaln!(args...) = 
-    sync_adaln!(args...; ref=(layer_norm_a = :layer_norm_a, layer_norm_s = :layer_norm_s, shift = :linear_s, gate = :linear_g))
+sync_af3_adaln!(args...) =
+    sync_adaln!(args...; ref=(layer_norm_a=:layer_norm_a, layer_norm_s=:layer_norm_s, shift=:linear_s, gate=:linear_g))
 
-sync_boltz2_adaln!(args...) = 
-    sync_adaln!(args...; ref=(layer_norm_a = :a_norm, layer_norm_s = :s_norm, shift = :s_bias, gate = :s_scale))
+sync_boltz2_adaln!(args...) =
+    sync_adaln!(args...; ref=(layer_norm_a=:a_norm, layer_norm_s=:s_norm, shift=:s_bias, gate=:s_scale))
 
 function sync_adaln!(py::PyObject, jl::NamedTuple; ref::NamedTuple)
     sync_layernorm!(py[ref.layer_norm_a], jl.layer_norm_a)
@@ -88,8 +99,26 @@ end
 
 function sync_af3_attention!(py::PyObject, ps::NamedTuple)
     if :weight ∈ keys(ps.qkv) # is_fused
-        throw(ErrorException("Not implemented."))
-    else
+        # Julia qkv is fused: [3*C_hidden*H, C_in]
+        # Python has linear_q, linear_k, linear_v
+        # Split Julia weight
+        W = ps.qkv.weight
+        C_h = size(W, 1) ÷ 3
+
+        copy_jl_ps_to_py!(py.linear_q.weight, view(W, 1:C_h, :))
+        copy_jl_ps_to_py!(py.linear_k.weight, view(W, C_h+1:2*C_h, :))
+        copy_jl_ps_to_py!(py.linear_v.weight, view(W, 2*C_h+1:3*C_h, :))
+
+        if :bias ∈ keys(ps.qkv)
+            B = ps.qkv.bias
+            copy_jl_ps_to_py!(py.linear_q.bias, view(B, 1:C_h))
+            copy_jl_ps_to_py!(py.linear_k.bias, view(B, C_h+1:2*C_h))
+            copy_jl_ps_to_py!(py.linear_v.bias, view(B, 2*C_h+1:3*C_h))
+        end
+    elseif :q in keys(ps.qkv) && :kv in keys(ps.qkv)
+        # Version where kv is fused.
+        throw(ErrorException("Not implemented"))
+    else # unfused
         sync_dense!(py.linear_q, ps.qkv.q)
         sync_dense!(py.linear_k, ps.qkv.k)
         sync_dense!(py.linear_v, ps.qkv.v)
@@ -103,12 +132,12 @@ function sync_af3_attention!(py::PyObject, ps::NamedTuple)
     return nothing
 end
 
-function sync_af3_attention_pair_bias!(py::PyObject, ps::NamedTuple)   
+function sync_af3_attention_pair_bias!(py::PyObject, ps::NamedTuple)
     if isempty(ps.linear_out)
         sync_layernorm!(py.layer_norm_a, ps.layer_norm_in)
     else
         sync_af3_adaln!(py.layer_norm_a, ps.layer_norm_in)
-        sync_dense!(py.linear_ada_out, ps.linear_out)    
+        sync_dense!(py.linear_ada_out, ps.linear_out)
     end
     sync_layernorm!(py.layer_norm_z, ps.layer_norm_z)
     sync_dense!(py.linear_z, ps.linear_z)
@@ -118,13 +147,13 @@ function sync_af3_attention_pair_bias!(py::PyObject, ps::NamedTuple)
     return nothing
 end
 
-sync_af3_opm!(args...) = 
-    sync_opm!(args...; ref=(layer_norm = :layer_norm, linear_1 = :linear_1, linear_2 = :linear_2, linear_out = :linear_out))
+sync_af3_opm!(args...) =
+    sync_opm!(args...; ref=(layer_norm=:layer_norm, linear_1=:linear_1, linear_2=:linear_2, linear_out=:linear_out))
 
 sync_af2_opm!(args...) = sync_af3_opm!(args...)
 
-sync_boltz2_opm!(args...) = 
-    sync_opm!(args...; ref=(layer_norm = :norm, linear_1 = :proj_a, linear_2 = :proj_b, linear_out = :proj_o))
+sync_boltz2_opm!(args...) =
+    sync_opm!(args...; ref=(layer_norm=:norm, linear_1=:proj_a, linear_2=:proj_b, linear_out=:proj_o))
 
 function sync_opm!(py::PyObject, jl::NamedTuple; ref::NamedTuple)
     sync_layernorm!(py[ref.layer_norm], jl.layer_norm)
@@ -135,11 +164,11 @@ function sync_opm!(py::PyObject, jl::NamedTuple; ref::NamedTuple)
     return nothing
 end
 
-sync_af3_pwa!(args...) = 
-    sync_pwa!(args...; ref=(layer_norm_m = :layer_norm_m, layer_norm_z = :layer_norm_z, linear_z = :linear_z, linear_v = :linear_v, linear_g = :linear_g, linear_out = :linear_o))
+sync_af3_pwa!(args...) =
+    sync_pwa!(args...; ref=(layer_norm_m=:layer_norm_m, layer_norm_z=:layer_norm_z, linear_z=:linear_z, linear_v=:linear_v, linear_g=:linear_g, linear_out=:linear_o))
 
-sync_boltz2_pwa!(args...) = 
-    sync_pwa!(args...; ref=(layer_norm_m = :m_norm, layer_norm_z = :z_norm, linear_z = :z_proj, linear_v = :v_proj, linear_g = :g_proj, linear_out = :o_proj))
+sync_boltz2_pwa!(args...) =
+    sync_pwa!(args...; ref=(layer_norm_m=:m_norm, layer_norm_z=:z_norm, linear_z=:z_proj, linear_v=:v_proj, linear_g=:g_proj, linear_out=:o_proj))
 
 function sync_pwa!(py::PyObject, jl::NamedTuple; ref::NamedTuple)
     sync_layernorm!(py[ref.layer_norm_m], jl.layer_norm_m)

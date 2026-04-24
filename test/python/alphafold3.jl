@@ -4,6 +4,92 @@ import torch
 import torch.nn as nn
 from torch.nn import Linear
 
+
+def get_query_block_padding(n_atom, n_query):
+    return (n_query - n_atom % n_query) % n_query
+
+def get_block_indices(atom_mask, n_query, n_key, device):
+    batch_dims = atom_mask.shape[:-1]
+    n_atom = atom_mask.shape[-1]
+    num_blocks = math.ceil(n_atom / n_query)
+    
+    # Simple sequential blocking for parity tests where n_query == n_key
+    idxs = torch.arange(num_blocks * n_key, device=device).reshape(num_blocks, n_key)
+    for _ in range(len(batch_dims)):
+        idxs = idxs.unsqueeze(0)
+    idxs = idxs.expand(*batch_dims, -1, -1)
+    
+    invalid_mask = idxs >= n_atom
+    idxs = idxs.clamp(max=n_atom - 1)
+    return idxs, invalid_mask
+
+def get_pair_atom_block_mask(atom_mask, num_blocks, n_query, n_key, pad_len_right_q, key_block_idxs, invalid_mask):
+    batch_dims = atom_mask.shape[:-1]
+    mask_padded = torch.nn.functional.pad(atom_mask, (0, pad_len_right_q), value=0.0)
+    mask_q = mask_padded.view(*batch_dims, num_blocks, n_query)
+    
+    # Fix: ensure atom_mask has same number of dims as key_block_idxs
+    # key_block_idxs is [*, num_blocks, n_key]
+    # atom_mask is [*, N]
+    mask_k = torch.gather(
+        atom_mask.unsqueeze(-2).expand(*batch_dims, num_blocks, -1), 
+        -1, 
+        key_block_idxs.long()
+    )
+    mask_k = mask_k * (~invalid_mask).float()
+    
+    return mask_q.unsqueeze(-1) * mask_k.unsqueeze(-2)
+
+def convert_single_rep_to_blocks(
+    ql: torch.Tensor,
+    n_query: int,
+    n_key: int,
+    atom_mask: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    if ql is None or n_query is None:
+        return ql, ql, atom_mask
+
+    batch_dims = ql.shape[:-2]
+    n_atom, n_dim = ql.shape[-2:]
+
+    num_blocks = math.ceil(n_atom / n_query)
+    pad_len_right_q = get_query_block_padding(n_atom=n_atom, n_query=n_query)
+
+    ql_query = torch.nn.functional.pad(ql, (0, 0, 0, pad_len_right_q), value=0.0)
+    ql_query = ql_query.reshape((*batch_dims, num_blocks, n_query, n_dim))
+
+    atom_mask = atom_mask.expand(*batch_dims, -1)
+
+    key_block_idxs, invalid_mask = get_block_indices(
+        atom_mask=atom_mask, n_query=n_query, n_key=n_key, device=ql.device
+    )
+
+    flat_batch_size = int(math.prod(batch_dims))
+    ql_flat = ql.reshape(flat_batch_size, n_atom, n_dim)
+
+    index_flat = key_block_idxs.reshape(flat_batch_size, num_blocks * n_key)
+    index_flat = index_flat.unsqueeze(-1).expand(-1, -1, n_dim)
+
+    mask_flat = invalid_mask.reshape(flat_batch_size, num_blocks * n_key)
+    mask_flat = mask_flat.unsqueeze(-1).expand(-1, -1, n_dim)
+
+    ql_key_flat = torch.gather(ql_flat, 1, index_flat.long())
+    ql_key_flat.masked_fill_(mask_flat, 0)
+
+    ql_key = ql_key_flat.reshape((*batch_dims, num_blocks, n_key, n_dim))
+
+    atom_pair_mask = get_pair_atom_block_mask(
+        atom_mask=atom_mask,
+        num_blocks=num_blocks,
+        n_query=n_query,
+        n_key=n_key,
+        pad_len_right_q=pad_len_right_q,
+        key_block_idxs=key_block_idxs,
+        invalid_mask=invalid_mask,
+    )
+
+    return ql_query, ql_key, atom_pair_mask
+
 def af3_permute_final_dims(tensor: torch.Tensor, inds):
     num_first_dims = len(tensor.shape)-len(inds)
     first_inds = list(range(num_first_dims))
@@ -490,7 +576,7 @@ class AF3CrossAttentionPairBias(nn.Module):
         a: torch.Tensor,
         z: torch.Tensor,
         mask: torch.Tensor,
-    ):
+    ) -> tuple:
         # Args:
         #     a:
         #         [*, N, C_token] Token or atom-level embedding
@@ -505,15 +591,37 @@ class AF3CrossAttentionPairBias(nn.Module):
             ql=a, n_query=self.n_query, n_key=self.n_key, atom_mask=mask
         )
 
-        # [*, 1, 1, N]
-        mask_bias = (self.inf * (mask - 1))[..., None, :, :]
+        # [*, 1, N, N] or [*, 1, nq, nk]
+        mask_bias = self.inf * (mask - 1)
+        if mask_bias.ndim == 2:
+            mask_bias = mask_bias[..., None, None, :]
+        else:
+            mask_bias = mask_bias[..., None, :, :]
         biases = [mask_bias]
 
         # [*, N, N, no_heads]
         z = self.linear_z(z)
 
-        # [*, no_heads, N, N]
-        z = af3_permute_final_dims(z, [2, 0, 1])
+        if self.n_query is not None:
+            # Block z: [B, N, N, H] -> [B, nb, nq, nk, H]
+            n_atom = z.shape[-2]
+            n_blocks = (n_atom + self.n_query - 1) // self.n_query
+            n_padded = n_blocks * self.n_query
+            
+            # Pad z
+            pad_val = n_padded - n_atom
+            if pad_val > 0:
+                z = torch.nn.functional.pad(z, (0, 0, 0, pad_val, 0, pad_val))
+            
+            # Extract diagonal blocks
+            z = z.view((*z.shape[:-3], n_blocks, self.n_query, n_blocks, self.n_query, z.shape[-1]))
+            z = torch.diagonal(z, dim1=-5, dim2=-3) # [*, nq, nk, H, nb]
+            
+            # [*, nb, no_heads, nq, nk]
+            z = z.permute(0, 4, 3, 1, 2)
+        else:
+            # [*, no_heads, N, N]
+            z = af3_permute_final_dims(z, [2, 0, 1])
 
         biases.append(z)
 
@@ -567,15 +675,14 @@ class AF3CrossAttentionPairBias(nn.Module):
             q_x=a_q,
             kv_x=a_k,
             biases=biases,
-            use_high_precision=use_high_precision_attention,
-            use_cueq_triangle_kernels=use_cueq_triangle_kernels,
+            # use_high_precision=use_high_precision_attention,
         )
 
         # Convert back to unpadded and flattened atom representation
         # [*, N_blocks, N_query, c_atom] -> [*, N_atom, c_atom]
         a = a.reshape((*batch_dims, -1, n_dim))[..., :n_atom, :]
 
-        if self.use_ada_layer_norm:
+        if self.use_ada_layer_norm and s is not None:
             a = self.sigmoid(self.linear_ada_out(s)) * a
 
         return a
