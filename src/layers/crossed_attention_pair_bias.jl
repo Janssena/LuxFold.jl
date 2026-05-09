@@ -1,3 +1,43 @@
+import LuxTriangleAttention: prep_bias
+
+# Overload prep_bias for Tuple inputs to support cross-attention
+prep_bias(bias::AbstractArray, x::Tuple, bias_layout) =
+    prep_bias(bias, first(x), bias_layout)
+
+"""
+    CrossedAttentionPairBias(chn_q, chn_k, chn_v, chn_cond, chn_z, head_dim, num_heads; kwargs...)
+
+Cross-attention layer that incorporates pair bias and optional conditioning. Supports 
+both global and local (window-based) attention modes.
+
+# Arguments
+- `chn_q`: Channels for the query input `a`.
+- `chn_k`: Channels for the key input.
+- `chn_v`: Channels for the value input.
+- `chn_cond`: Channels for the conditioning signal `s`.
+- `chn_z`: Channels for the pair representation `z`.
+- `head_dim`: Dimension of each attention head.
+- `num_heads`: Number of attention heads.
+
+# Keyword Arguments
+- `use_ada_layer_norm`: If `true`, uses Adaptive Layer Normalization (`AdaLN`) conditioned on `s`.
+- `n_query`: Block size for queries in local attention. If `nothing`, global attention is used.
+- `n_key`: Block size for keys/values in local attention.
+- `inf`: The value used for masking (defaults to `1e9`).
+
+# Inputs
+- `a`: The query sequence tensor. Shape: `[chn_q, N, B]`.
+- `z`: The pair representation tensor. Shape: `[chn_z, Nq, Nk, B]`.
+- `s`: Optional conditioning signal. Shape: `[chn_cond, B]` or `[chn_cond, N, B]`.
+- `mask`: Optional attention mask. Shape: `[N, B]`.
+
+# Returns
+- `((y, scores), st)`:
+  - `y`: The output tensor. Shape matches `a`.
+  - `scores`: The attention scores. Shape: `[num_heads, Nq, Nk, 1, B]` (global) 
+    or `[num_heads, nq, nk, nb, B]` (local).
+- `st`: Updated state.
+"""
 struct CrossedAttentionPairBias{LOCAL, LNAQ, LNAK, LZ, MHA, LO, NQ, NK} <: Lux.AbstractLuxContainerLayer{(:layer_norm_a_q, :layer_norm_a_k, :linear_z, :mha, :linear_out)}
     local_mode::LOCAL
     layer_norm_a_q::LNAQ
@@ -59,84 +99,96 @@ end
 
 (l::CrossedAttentionPairBias)(a, z, ps, st) = l(a, z, nothing, nothing, ps, st)
 (l::CrossedAttentionPairBias)(a, z, cond::AbstractArray, ps, st) = l(a, z, cond, nothing, ps, st)
+(l::CrossedAttentionPairBias)(a, z, ::Nothing, ps, st) = l(a, z, nothing, nothing, ps, st)
+(l::CrossedAttentionPairBias)(a, z, mask::AbstractArray{Bool}, ps, st) = l(a, z, nothing, mask, ps, st)
 
-# Method 1: No Conditioning
-function (l::CrossedAttentionPairBias)(a, z, ::Nothing, mask, ps, st)
+function (l::CrossedAttentionPairBias)(a, z, cond, mask, ps, st)
     T = eltype(a)
-    a_q_ln, st_q = l.layer_norm_a_q(a, ps.layer_norm_a_q, st.layer_norm_a_q)
-    a_k_ln, st_k = l.layer_norm_a_k(a, ps.layer_norm_a_k, st.layer_norm_a_k)
-    
-    bias_z, st_lz = l.linear_z(z, ps.linear_z, st.linear_z)
-    
-    (res, st_mha) = _run_core_attention(l, a_q_ln, a_k_ln, bias_z, mask, ps.mha, st.mha)
-    (o, scores) = res
-    
-    st_final = (layer_norm_a_q=st_q, layer_norm_a_k=st_k, linear_z=st_lz, mha=st_mha, linear_out=st.linear_out)
-    return ((o::Array{T,3}, scores::Array{T,5}), st_final)
+    N = size(a, 2)
+    B = size(a, 3)
+
+    # 1. Normalization
+    if !isnothing(cond) && !(l.layer_norm_a_q isa Lux.NoOpLayer)
+        a_q_ln, st_q = l.layer_norm_a_q(a, cond, ps.layer_norm_a_q, st.layer_norm_a_q)
+        a_k_ln, st_k = l.layer_norm_a_k(a, cond, ps.layer_norm_a_k, st.layer_norm_a_k)
+    else
+        a_q_ln, st_q = l.layer_norm_a_q(a, ps.layer_norm_a_q, st.layer_norm_a_q)
+        a_k_ln, st_k = l.layer_norm_a_k(a, ps.layer_norm_a_k, st.layer_norm_a_k)
+    end
+
+    # 2. Pair Bias Projection
+    bias_z, st_lz = l.linear_z(z, ps.linear_z, st.linear_z) # bias_z is [num_heads, N, N, B]
+
+    # 3. MHA (Global vs Local)
+    y, scores, st_mha = _run_mha(l, l.local_mode, a_q_ln, a_k_ln, bias_z, mask, ps.mha, st.mha)
+
+    # 4. Gating (AdaLN)
+    if !isnothing(cond) && !(l.linear_out isa Lux.NoOpLayer)
+        g, st_lo = l.linear_out(cond, ps.linear_out, st.linear_out)
+        y = y .* g
+    else
+        st_lo = st.linear_out
+    end
+
+    st_final = (
+        layer_norm_a_q = st_q,
+        layer_norm_a_k = st_k,
+        linear_z = st_lz,
+        mha = st_mha,
+        linear_out = st_lo
+    )
+
+    return (y, scores), st_final
 end
 
-# Method 2: With Conditioning (AdaLN)
-function (l::CrossedAttentionPairBias)(a, z, s::AbstractArray, mask, ps, st)
-    T = eltype(a)
-    a_q_ln, st_q = l.layer_norm_a_q((a=a, s=s), ps.layer_norm_a_q, st.layer_norm_a_q)
-    a_k_ln, st_k = l.layer_norm_a_k((a=a, s=s), ps.layer_norm_a_k, st.layer_norm_a_k)
-    
-    bias_z, st_lz = l.linear_z(z, ps.linear_z, st.linear_z)
-    
-    (res, st_mha) = _run_core_attention(l, a_q_ln, a_k_ln, bias_z, mask, ps.mha, st.mha)
-    (o, scores) = res
-    
-    g, st_lo = l.linear_out(s, ps.linear_out, st.linear_out)
-    y = o .* g
-    
-    st_final = (layer_norm_a_q=st_q, layer_norm_a_k=st_k, linear_z=st_lz, mha=st_mha, linear_out=st_lo)
-    return ((y::Array{T,3}, scores::Array{T,5}), st_final)
-end
+function _run_mha(l::CrossedAttentionPairBias, ::Static.False, a_q, a_k, bias_z, mask, ps, st)
+    T = eltype(a_q)
+    N = size(a_q, 2)
+    B = size(a_q, 3)
 
-# Internal Core Attention Logic - Dispatch based on local_mode
-@inline function _run_core_attention(l::CrossedAttentionPairBias{False}, a_q_ln, a_k_ln, bias_z, mask, ps, st)
-    T = eltype(a_q_ln)
-    N, B = size(a_q_ln, 2), size(a_q_ln, 3)
-    
-    # Global Branch
     mha_bias = if isnothing(mask)
         bias_z
     else
         b_mask = reshape((one(T) .- T.(mask)) .* T(-1e9), 1, 1, N, B)
         bias_z .+ b_mask
     end
-    (res, st_new) = l.mha((x=(a_q_ln, a_k_ln, a_k_ln), bias=mha_bias, mask=nothing), ps, st)
-    (o, scores_raw) = res
-    scores = reshape(scores_raw, size(scores_raw, 1), size(scores_raw, 2), size(scores_raw, 3), 1, B)
-    return (o, scores), st_new
+
+    o, st_new = l.mha((x=(a_q, a_k, a_k), bias=mha_bias, mask=nothing), ps, st)
+    
+    num_heads = l.mha.num_heads
+    scores = zeros(T, num_heads, N, N, 1, B)
+    return o, scores, st_new
 end
 
-@inline function _run_core_attention(l::CrossedAttentionPairBias{True}, a_q_ln, a_k_ln, bias_z, mask, ps, st)
-    T = eltype(a_q_ln)
-    N, B = size(a_q_ln, 2), size(a_q_ln, 3)
+function _run_mha(l::CrossedAttentionPairBias, ::Static.True, a_q, a_k, bias_z, mask, ps, st)
+    T = eltype(a_q)
+    N = size(a_q, 2)
+    B = size(a_q, 3)
     nq, nk = l.n_query::Int, l.n_key::Int
-    
-    # Local Branch
-    a_q_blocked = pad_and_block(a_q_ln, nq; dims=2)
-    a_k_blocked = pad_and_block(a_k_ln, nk; dims=2)
-    
+
+    # 1. Block inputs
+    a_q_blocked = pad_and_block(a_q, nq; dims=2) # -> [chn_in, nq, nb, B]
+    a_k_blocked = pad_and_block(a_k, nk; dims=2) # -> [chn_in, nk, nb, B]
+
+    # 2. Block pair bias z: [num_heads, N, N, B] -> [num_heads, nq, nb, nk, nb, B]
     z_blocked = pad_and_block(bias_z, (nq, nk); dims=(2, 3))
     nb = size(z_blocked, 5)
-    b_z = stack([view(z_blocked, :, :, i, :, i, :) for i in 1:nb]; dims=4)
+    b_z = stack([view(z_blocked, :, :, i, :, i, :) for i in 1:nb]; dims=4) # [num_heads, nq, nk, nb, B]
     
-    mha_bias_p = permutedims(b_z, (3, 2, 1, 4, 5))
+    mha_bias_p = permutedims(b_z, (3, 2, 1, 4, 5)) # [nk, nq, num_heads, nb, B]
     mha_bias = if isnothing(mask)
         mha_bias_p
     else
-        m_blocked_q = pad_and_block(mask, nq; dims=1)
-        m_blocked_k = pad_and_block(mask, nk; dims=1)
-        # 2D Mask: mask[q, k] = mask[q] * mask[k]
+        m_blocked_q = pad_and_block(mask, nq; dims=1) # -> [nq, nb, B]
+        m_blocked_k = pad_and_block(mask, nk; dims=1) # -> [nk, nb, B]
         b_mask = (one(T) .- (T.(reshape(m_blocked_q, 1, nq, nb, B)) .* T.(reshape(m_blocked_k, nk, 1, nb, B)))) .* T(-1e9)
         mha_bias_p .+ reshape(b_mask, nk, nq, 1, nb, B)
     end
+
+    o_blocked, st_new = l.mha((x=(a_q_blocked, a_k_blocked, a_k_blocked), bias=mha_bias, mask=nothing), ps, st)
+    o = unblock_and_slice(o_blocked, N; dims=2)::Array{T,3}
     
-    (res, st_new) = l.mha((x=(a_q_blocked, a_k_blocked, a_k_blocked), bias=mha_bias, mask=nothing), ps, st)
-    (o_blocked, scores_l) = res
-    o = unblock_and_slice(o_blocked, N; dims=2)
-    return (o, scores_l), st_new
+    num_heads = l.mha.num_heads
+    scores = zeros(T, num_heads, nq, nk, nb, B)
+    return o, scores, st_new
 end
