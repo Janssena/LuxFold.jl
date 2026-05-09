@@ -1,3 +1,30 @@
+"""
+    AdaLN(chn_a, chn_s; rank=3, epsilon=1f-5, affine=(layer_norm_a=false, layer_norm_s=true), use_bias=false)
+    AdaLN(chn_a => chn_s; kwargs...)
+
+Adaptive Layer Normalization (AdaLN) layer. Normalizes the input `a` and then applies a 
+scale and shift derived from the conditioning input `s`.
+
+# Arguments
+- `chn_a`: Number of channels in the input `a`.
+- `chn_s`: Number of channels in the conditioning signal `s`.
+
+# Keyword Arguments
+- `rank`: The rank of the input tensors. Typically 3 for [C, N, B] or 4 for [C, N, S, B].
+- `epsilon`: A small constant for numerical stability in LayerNorm.
+- `affine`: A `NamedTuple` or `Bool` specifying which internal LayerNorms should have 
+  affine transformations. Defaults to `(layer_norm_a=false, layer_norm_s=true)`.
+- `use_bias`: A `NamedTuple` or `Bool` specifying which internal layers should use bias. 
+  Defaults to `false`.
+
+# Inputs
+- `a`: The input array to be normalized. Expected shape: `[chn_a, N, (S, ) B]`.
+- `s`: The conditioning signal. Expected shape: `[chn_s, N, (S, ) B]`.
+
+# Returns
+- `y`: The modulated output. Shape matches `a`.
+- `st`: Updated state.
+"""
 struct AdaLN{LNA,LNS,S,G} <: Lux.AbstractLuxContainerLayer{(:layer_norm_a,:layer_norm_s,:shift,:gate)}
     layer_norm_a::LNA
     layer_norm_s::LNS

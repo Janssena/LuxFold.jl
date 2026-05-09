@@ -1,3 +1,29 @@
+"""
+    PairWeightedAveraging(chn_msa, chn_pair, head_dim, num_heads; kwargs...)
+
+Updates the MSA representation `m` by performing a weighted average of its values, where 
+the weights are derived from the pair representation `z`.
+
+# Arguments
+- `chn_msa`: Number of channels in the MSA input `m`.
+- `chn_pair`: Number of channels in the pair representation `z`.
+- `head_dim`: Dimension of each attention head.
+- `num_heads`: Number of attention heads.
+
+# Keyword Arguments
+- `use_bias`: A `NamedTuple` or `Bool` specifying which internal layers should use bias.
+- `eps`: A small constant for numerical stability in LayerNorm.
+- `inf`: The value used for masking (defaults to `1e9`).
+
+# Inputs
+- `m`: MSA tensor. Expected shape: `[chn_msa, N_seq, N_res, B]`.
+- `z`: Pair representation tensor. Expected shape: `[chn_pair, N_res, N_res, B]`.
+- `mask`: Optional attention mask. Expected shape: `[N_res, N_res, B]`.
+
+# Returns
+- `y`: The updated MSA tensor. Shape matches `m`.
+- `st`: Updated state.
+"""
 struct PairWeightedAveraging{LNM,LNZ,LV,LZ,LG,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_m, :layer_norm_z, :linear_v, :linear_z, :linear_g, :linear_out)}
     layer_norm_m::LNM
     layer_norm_z::LNZ

@@ -1,3 +1,29 @@
+"""
+    OuterProductMean(c_m, c_z, c_hidden; kwargs...)
+
+Computes an outer product mean from an MSA representation to update a pair representation. 
+This layer captures correlations between columns in the MSA.
+
+# Arguments
+- `c_m`: Number of channels in the MSA input `m`.
+- `c_z`: Number of channels in the output pair representation `y`.
+- `c_hidden`: The hidden dimension for the internal projections.
+
+# Keyword Arguments
+- `eps`: A small constant for numerical stability during normalization.
+- `use_bias`: Whether to use bias in the initial projections.
+- `use_clamp`: If `true`, clamps the normalization factor (mask sum) to at least 1.0.
+- `project_first`: If `true` (AlphaFold3 style), applies the output projection before 
+  dividing by the normalization factor. If `false` (Boltz2 style), divides first.
+
+# Inputs
+- `m`: MSA tensor. Expected shape: `[c_m, N_seq, N_res, B]`.
+- `mask`: Optional MSA mask. Expected shape: `[N_seq, N_res, B]`.
+
+# Returns
+- `y`: The pair update tensor. Shape: `[c_z, N_res, N_res, B]`.
+- `st`: Updated state.
+"""
 struct OuterProductMean{LN, L1, L2, LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm, :linear1, :linear2, :linear_out)}
     layer_norm::LN
     linear1::L1
