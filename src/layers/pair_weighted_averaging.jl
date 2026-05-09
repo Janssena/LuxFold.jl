@@ -16,7 +16,7 @@ the weights are derived from the pair representation `z`.
 - `inf`: The value used for masking (defaults to `1e9`).
 
 # Inputs
-- `m`: MSA tensor. Expected shape: `[chn_msa, N_seq, N_res, B]`.
+- `m`: MSA tensor. Expected shape: `[chn_msa, N_res, N_seq, B]`.
 - `z`: Pair representation tensor. Expected shape: `[chn_pair, N_res, N_res, B]`.
 - `mask`: Optional attention mask. Expected shape: `[N_res, N_res, B]`.
 
@@ -65,9 +65,19 @@ end
     ps, st
 )
 
+# In-place mask application with zero-allocation dispatch
+@inline apply_pwa_mask!(b, ::Nothing) = nothing
+
+@inline function apply_pwa_mask!(b::AbstractArray{T}, mask::AbstractArray) where T
+    neginf = -floatmax(T)
+    mask_reshaped = reshape(mask, 1, size(mask)...) # [1, N_res, N_res, B]
+    @. b = ifelse(mask_reshaped, b, neginf)
+    return nothing
+end
+
 function (l::PairWeightedAveraging)(m::AbstractArray{T,4}, z::AbstractArray{T,4}, mask, ps, st) where T
-    C_m, N_seq, N_res, B = size(m)
-    C_z, _, _, _ = size(z)
+    chn_msa, N_res, N_seq, B = size(m)
+    chn_pair, _, _, _ = size(z)
     H, C_h = l.num_heads, l.head_dim
 
     # 1. Normalize
@@ -75,42 +85,27 @@ function (l::PairWeightedAveraging)(m::AbstractArray{T,4}, z::AbstractArray{T,4}
     z_ln, st_z = l.layer_norm_z(z, ps.layer_norm_z, st.layer_norm_z)
 
     # 2. Values and Gating from m
-    v, st_v = l.linear_v(m_ln, ps.linear_v, st.linear_v) # [H*C_h, N_seq, N_res, B]
-    g, st_g = l.linear_g(m_ln, ps.linear_g, st.linear_g) # [H*C_h, N_seq, N_res, B]
+    v, st_v = l.linear_v(m_ln, ps.linear_v, st.linear_v) # [H*C_h, N_res, N_seq, B]
+    g, st_g = l.linear_g(m_ln, ps.linear_g, st.linear_g) # [H*C_h, N_res, N_seq, B]
 
     # 3. Bias from z
     b, st_lz = l.linear_z(z_ln, ps.linear_z, st.linear_z) # [H, N_res, N_res, B]
 
-    # 4. Attention Weights (Softmax)
-    # b: [H, Ni, Nj, B]. We want softmax over Nj (dim 3).
-    if !isnothing(mask)
-        # mask: [Ni, Nj, B]. Reshape to [1, Ni, Nj, B]
-        # mask_bias = reshape(T(l.inf) .* (mask .- one(T)), 1, N_res, N_res, B)
-        # b = b .+ mask_bias
-        neginf = -floatmax(T)
-        mask_reshaped = reshape(mask, 1, N_res, N_res, B)
-        @. b = ifelse(mask_reshaped, b, neginf)
-    end
-    w = Lux.softmax(b; dims=3)
+    # 4. In-place, branch-free masking & Softmax
+    apply_pwa_mask!(b, mask)
+    w = Lux.softmax(b; dims=3) # Softmax over Nj (dim 3)
 
     # 5. Weighted Averaging
-    # We want o[c, h, i, s, b] = sum_j w[h, i, j, b] * v[c, h, j, s, b]
-    v = reshape(v, C_h, H, N_seq, N_res, B)
+    v = reshape(v, C_h, H, N_res, N_seq, B)
     
-    # Align batch dimensions (H, B) to the end for broadcasting/batching
-    # v_flat: [C_h * N_seq, N_res, H * B]
-    v_flat = reshape(permutedims(v, (1, 3, 4, 2, 5)), C_h * N_seq, N_res, H * B)
-    
-    # w_flat: [N_res, N_res, H * B] (Ni, Nj, H*B)
+    # Flat tensors for batched matrix multiplication contracting Nj (dim 3 of v / dim 2 of w)
+    v_flat = reshape(permutedims(v, (1, 4, 3, 2, 5)), C_h * N_seq, N_res, H * B)
     w_flat = reshape(permutedims(w, (2, 3, 1, 4)), N_res, N_res, H * B)
 
-    # Use keywords to contract Nj (dim 2 for both v_flat and w_flat)
-    # This avoids permuting w to put Nj at dim 1.
     o = Lux.batched_matmul(v_flat, w_flat; lhs_contracting_dim=2, rhs_contracting_dim=2)
     
-    # Re-align and reshape back to [C_h*H, N_seq, N_res, B] to match gating layout
     o = reshape(o, C_h, N_seq, N_res, H, B)
-    o = reshape(permutedims(o, (1, 4, 2, 3, 5)), C_h * H, N_seq, N_res, B)
+    o = reshape(permutedims(o, (1, 4, 3, 2, 5)), C_h * H, N_res, N_seq, B)
 
     # 6. Gating and Output
     o_gated = @. o * g
