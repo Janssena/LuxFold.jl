@@ -113,9 +113,10 @@ end
     m_blocked_q = pad_and_block(mask, blocksize; dims=1) # [blocksize, nb, B]
     m_blocked_k = pad_and_block(mask, windowsize; dims=1) # [windowsize, nb, B]
 
-    combined_mask = reshape(m_blocked_k, windowsize, 1, 1, size(m_blocked_k, 2), size(m_blocked_k, 3)) .& reshape(m_blocked_q, 1, blocksize, 1, size(m_blocked_q, 2), size(m_blocked_q, 3))
+    mask_k = reshape(m_blocked_k, windowsize, 1, 1, size(m_blocked_k, 2), size(m_blocked_k, 3))
+    mask_q = reshape(m_blocked_q, 1, blocksize, 1, size(m_blocked_q, 2), size(m_blocked_q, 3))
 
-    @. mha_bias_p = ifelse(combined_mask, mha_bias_p, mha_bias_p + neginf)
+    @. mha_bias_p = ifelse(mask_k & mask_q, mha_bias_p, mha_bias_p + neginf)
     return nothing
 end
 
