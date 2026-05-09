@@ -64,7 +64,6 @@ end
     ps, st
 )
 
-# In-place mask application with zero-allocation dispatch
 @inline apply_pwa_mask!(b, ::Nothing) = nothing
 
 @inline function apply_pwa_mask!(b::AbstractArray{T}, mask::AbstractArray) where T
@@ -88,7 +87,7 @@ function (l::PairWeightedAveraging)(m::AbstractArray{T,4}, z::AbstractArray{T,4}
     b, st_lz = l.linear_z(z_ln, ps.linear_z, st.linear_z) # [H, N, N, B]
 
     apply_pwa_mask!(b, mask)
-    w = Lux.softmax(b; dims=3) # Softmax over Nj (dim 3)
+    w = Lux.softmax(b; dims=3)
 
     v = reshape(v, D, H, N, S, B)
 

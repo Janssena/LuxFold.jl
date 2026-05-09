@@ -5,13 +5,13 @@ Computes an outer product mean from an MSA representation to update a pair repre
 This layer captures correlations between columns in the MSA.
 
 # Arguments
-- `chn_in`: Channels in the MSA input `m`.
-- `chn_z`: Channels in the output pair representation `y`.
-- `chn_hidden`: Hidden dimension for internal projections.
+- `chn_in`: Number of channels in the MSA input `m`.
+- `chn_z`: Number of channels in the output pair representation `y`.
+- `chn_hidden`: The hidden dimension for the internal projections.
 
 # Keyword Arguments
-- `eps`: Small constant for numerical stability during normalization.
-- `use_bias`: Whether to use bias in initial projections.
+- `eps`: A small constant for numerical stability during normalization.
+- `use_bias`: Whether to use bias in the initial projections.
 - `use_clamp`: If `true`, clamps the normalization factor (mask sum) to at least 1.0.
 - `project_first`: If `true` (AlphaFold3 style), applies the output projection before 
   dividing by the normalization factor. If `false` (Boltz2 style), divides first.
@@ -58,7 +58,6 @@ end
 
 (l::OuterProductMean)(m, ps, st) = l(m, nothing, ps, st)
 
-# Zero-cost dispatch using Static.jl types
 @inline _apply_normalization(norm, ::True, eps, T) = max.(norm, one(T))
 @inline _apply_normalization(norm, ::False, eps, T) = norm .+ T(eps)
 
