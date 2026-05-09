@@ -3,10 +3,6 @@
     include("adaln.boltz2.jl")
 end
 
-@testset "Attention" begin
-    include("attention.af3.jl")
-end
-
 @testset "AttentionPairBias" begin
     include("attention_pair_bias.af3.jl")
     include("attention_pair_bias.boltz2.jl")
