@@ -51,7 +51,7 @@ rng = Random.Xoshiro(42)
                 sync_af3_cross_attention_pair_bias!(py_layer, ps)
 
                 # 4. Forward passes
-                (y_jl, scores_jl), _ = jl_layer((a=x, z=z, s=cond_val, mask=mask), ps, st)
+                y_jl, _ = jl_layer((a=x, z=z, cond=cond_val, mask=mask), ps, st)
 
                 x_py = to_py(x; swap_batch_dim=true).to(py_dtype(T))
                 z_py = to_py(z; swap_batch_dim=true).to(py_dtype(T))
@@ -61,11 +61,11 @@ rng = Random.Xoshiro(42)
                 y_py = py_layer(x_py, z_py, cond_py, mask_py)
 
                 @testset "Python parity ($T)" begin
-                    @test y_jl ≈ to_jl(y_py; swap_batch_dim=true) rtol = 1e-5 atol = 1e-5
+                    @test y_jl ≈ to_jl(y_py; swap_batch_dim=true)
                 end
 
                 @testset "Type-stability ($T)" begin
-                    @test_nowarn @inferred jl_layer((a=x, z=z, s=cond_val, mask=mask), ps, st)
+                    @test_nowarn @inferred jl_layer((a=x, z=z, cond=cond_val, mask=mask), ps, st)
                 end
             end
         end

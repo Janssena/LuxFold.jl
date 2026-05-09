@@ -38,16 +38,13 @@ both global and local (window-based) attention modes.
     or `[num_heads, nq, nk, nb, B]` (local).
 - `st`: Updated state.
 """
-struct CrossedAttentionPairBias{LOCAL, LNAQ, LNAK, LZ, MHA, LO, NQ, NK} <: Lux.AbstractLuxContainerLayer{(:layer_norm_a_q, :layer_norm_a_k, :linear_z, :mha, :linear_out)}
+struct CrossedAttentionPairBias{LOCAL,LNAQ,LNAK,LZ,MHA,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_a_q, :layer_norm_a_k, :linear_z, :mha, :linear_out)}
     local_mode::LOCAL
     layer_norm_a_q::LNAQ
     layer_norm_a_k::LNAK
     linear_z::LZ
     mha::MHA
     linear_out::LO
-    n_query::NQ
-    n_key::NK
-    inf::Float32
 end
 
 function CrossedAttentionPairBias(
@@ -55,8 +52,7 @@ function CrossedAttentionPairBias(
     head_dim::Int, num_heads::Int;
     use_ada_layer_norm::Bool=true,
     n_query::Union{Nothing,Int}=nothing,
-    n_key::Union{Nothing,Int}=nothing,
-    inf::Real=1e9
+    n_key::Union{Nothing,Int}=nothing
 )
     # 1. Normalization
     if use_ada_layer_norm
@@ -80,19 +76,18 @@ function CrossedAttentionPairBias(
         use_gate=true, fuse_qkv=false,
         use_bias=(false, (gate=false,))
     )
-    
-    local_mode = static(!isnothing(n_query))
+
+    local_mode = isnothing(n_query) ? nothing : (n_query, n_key)
 
     return CrossedAttentionPairBias(
-        local_mode, layer_norm_a_q, layer_norm_a_k, linear_z, mha, linear_out,
-        n_query, n_key, Float32(inf)
+        local_mode, layer_norm_a_q, layer_norm_a_k, linear_z, mha, linear_out
     )
 end
 
 # Top-level Dispatches
 (l::CrossedAttentionPairBias)(inputs::NamedTuple, ps, st) = l(
     inputs.a, inputs.z,
-    get(inputs, :s, nothing),
+    get(inputs, :cond, get(inputs, :s, nothing)),
     get(inputs, :mask, nothing),
     ps, st
 )
@@ -102,93 +97,110 @@ end
 (l::CrossedAttentionPairBias)(a, z, ::Nothing, ps, st) = l(a, z, nothing, nothing, ps, st)
 (l::CrossedAttentionPairBias)(a, z, mask::AbstractArray{Bool}, ps, st) = l(a, z, nothing, mask, ps, st)
 
-function (l::CrossedAttentionPairBias)(a, z, cond, mask, ps, st)
-    T = eltype(a)
-    N = size(a, 2)
-    B = size(a, 3)
+# Global attention masking
+@inline apply_cab_mask!(bias_z, ::Nothing) = nothing
 
-    # 1. Normalization
-    if !isnothing(cond) && !(l.layer_norm_a_q isa Lux.NoOpLayer)
-        a_q_ln, st_q = l.layer_norm_a_q(a, cond, ps.layer_norm_a_q, st.layer_norm_a_q)
-        a_k_ln, st_k = l.layer_norm_a_k(a, cond, ps.layer_norm_a_k, st.layer_norm_a_k)
-    else
-        a_q_ln, st_q = l.layer_norm_a_q(a, ps.layer_norm_a_q, st.layer_norm_a_q)
-        a_k_ln, st_k = l.layer_norm_a_k(a, ps.layer_norm_a_k, st.layer_norm_a_k)
-    end
+@inline function apply_cab_mask!(bias_z::AbstractArray{T}, mask::AbstractArray; neginf=T == Float64 ? -1e9 : -floatmax(T)) where T
+    Nk = size(mask, 1)
+    mask_reshaped = reshape(mask, 1, 1, Nk, size(mask, 2)) # [1, 1, Nk, B]
+    @. bias_z = ifelse(mask_reshaped, bias_z, neginf)
+    return nothing
+end
+
+# Local attention masking (pure boolean broadcasting)
+@inline apply_local_cab_mask!(mha_bias_p, ::Nothing) = nothing
+
+@inline function apply_local_cab_mask!(mha_bias_p::AbstractArray{T}, mask::AbstractArray; neginf=T == Float64 ? -1e9 : -floatmax(T)) where T
+    windowsize = size(mha_bias_p, 1) # Key block size (window size)
+    blocksize = size(mha_bias_p, 2) # Query block size
+
+    m_blocked_q = pad_and_block(mask, blocksize; dims=1) # [blocksize, nb, B]
+    m_blocked_k = pad_and_block(mask, windowsize; dims=1) # [windowsize, nb, B]
+
+    combined_mask = reshape(m_blocked_k, windowsize, 1, 1, size(m_blocked_k, 2), size(m_blocked_k, 3)) .& reshape(m_blocked_q, 1, blocksize, 1, size(m_blocked_q, 2), size(m_blocked_q, 3))
+
+    @. mha_bias_p = ifelse(combined_mask, mha_bias_p, mha_bias_p + neginf)
+    return nothing
+end
+
+# Functor for unconditioned inputs (cond === Nothing)
+function (l::CrossedAttentionPairBias)(a, z, ::Nothing, mask, ps, st)
+    # 1. Normalize without cond
+    a_q_ln, st_q = l.layer_norm_a_q(a, ps.layer_norm_a_q, st.layer_norm_a_q)
+    a_k_ln, st_k = l.layer_norm_a_k(a, ps.layer_norm_a_k, st.layer_norm_a_k)
 
     # 2. Pair Bias Projection
-    bias_z, st_lz = l.linear_z(z, ps.linear_z, st.linear_z) # bias_z is [num_heads, N, N, B]
+    bias_z, st_lz = l.linear_z(z, ps.linear_z, st.linear_z)
 
     # 3. MHA (Global vs Local)
-    y, scores, st_mha = _run_mha(l, l.local_mode, a_q_ln, a_k_ln, bias_z, mask, ps.mha, st.mha)
-
-    # 4. Gating (AdaLN)
-    if !isnothing(cond) && !(l.linear_out isa Lux.NoOpLayer)
-        g, st_lo = l.linear_out(cond, ps.linear_out, st.linear_out)
-        y = y .* g
-    else
-        st_lo = st.linear_out
-    end
+    y, st_mha = _run_mha(l, a_q_ln, a_k_ln, bias_z, mask, ps.mha, st.mha)
 
     st_final = (
-        layer_norm_a_q = st_q,
-        layer_norm_a_k = st_k,
-        linear_z = st_lz,
-        mha = st_mha,
-        linear_out = st_lo
+        layer_norm_a_q=st_q,
+        layer_norm_a_k=st_k,
+        linear_z=st_lz,
+        mha=st_mha,
+        linear_out=st.linear_out
     )
 
-    return (y, scores), st_final
+    return y, st_final
 end
 
-function _run_mha(l::CrossedAttentionPairBias, ::Static.False, a_q, a_k, bias_z, mask, ps, st)
-    T = eltype(a_q)
-    N = size(a_q, 2)
-    B = size(a_q, 3)
+# Functor for conditioned inputs (cond::AbstractArray)
+function (l::CrossedAttentionPairBias)(a, z, cond::AbstractArray, mask, ps, st)
+    # 1. Normalize with cond
+    a_q_ln, st_q = l.layer_norm_a_q(a, cond, ps.layer_norm_a_q, st.layer_norm_a_q)
+    a_k_ln, st_k = l.layer_norm_a_k(a, cond, ps.layer_norm_a_k, st.layer_norm_a_k)
 
-    mha_bias = if isnothing(mask)
-        bias_z
-    else
-        b_mask = reshape((one(T) .- T.(mask)) .* T(-1e9), 1, 1, N, B)
-        bias_z .+ b_mask
-    end
+    # 2. Pair Bias Projection
+    bias_z, st_lz = l.linear_z(z, ps.linear_z, st.linear_z)
 
-    o, st_new = l.mha((x=(a_q, a_k, a_k), bias=mha_bias, mask=nothing), ps, st)
-    
-    num_heads = l.mha.num_heads
-    scores = zeros(T, num_heads, N, N, 1, B)
-    return o, scores, st_new
+    # 3. MHA (Global vs Local)
+    y, st_mha = _run_mha(l, a_q_ln, a_k_ln, bias_z, mask, ps.mha, st.mha)
+
+    # 4. In-place Gating (AdaLN)
+    g, st_lo = l.linear_out(cond, ps.linear_out, st.linear_out)
+    @. y *= g
+
+    st_final = (
+        layer_norm_a_q=st_q,
+        layer_norm_a_k=st_k,
+        linear_z=st_lz,
+        mha=st_mha,
+        linear_out=st_lo
+    )
+
+    return y, st_final
 end
 
-function _run_mha(l::CrossedAttentionPairBias, ::Static.True, a_q, a_k, bias_z, mask, ps, st)
+function _run_mha(l::CrossedAttentionPairBias{Nothing}, a_q, a_k, bias_z, mask, ps, st)
+    apply_cab_mask!(bias_z, mask)
+
+    o, st_new = l.mha((x=(a_q, a_k, a_k), bias=bias_z, mask=nothing), ps, st)
+
+    return o, st_new
+end
+
+function _run_mha(l::CrossedAttentionPairBias{<:NTuple{2,Int}}, a_q, a_k, bias_z, mask, ps, st)
+    Nq = size(a_q, 2)
     T = eltype(a_q)
-    N = size(a_q, 2)
-    B = size(a_q, 3)
-    nq, nk = l.n_query::Int, l.n_key::Int
+    blocksize, windowsize = l.local_mode
 
     # 1. Block inputs
-    a_q_blocked = pad_and_block(a_q, nq; dims=2) # -> [chn_in, nq, nb, B]
-    a_k_blocked = pad_and_block(a_k, nk; dims=2) # -> [chn_in, nk, nb, B]
+    a_q_blocked = pad_and_block(a_q, blocksize; dims=2) # -> [chn_in, blocksize, nb, B]
+    a_k_blocked = pad_and_block(a_k, windowsize; dims=2) # -> [chn_in, windowsize, nb, B]
 
-    # 2. Block pair bias z: [num_heads, N, N, B] -> [num_heads, nq, nb, nk, nb, B]
-    z_blocked = pad_and_block(bias_z, (nq, nk); dims=(2, 3))
+    # 2. Block pair bias z: [num_heads, Nq, Nk, B] -> [num_heads, blocksize, nb, windowsize, nb, B]
+    z_blocked = pad_and_block(bias_z, (blocksize, windowsize); dims=(2, 3))
     nb = size(z_blocked, 5)
-    b_z = stack([view(z_blocked, :, :, i, :, i, :) for i in 1:nb]; dims=4) # [num_heads, nq, nk, nb, B]
-    
-    mha_bias_p = permutedims(b_z, (3, 2, 1, 4, 5)) # [nk, nq, num_heads, nb, B]
-    mha_bias = if isnothing(mask)
-        mha_bias_p
-    else
-        m_blocked_q = pad_and_block(mask, nq; dims=1) # -> [nq, nb, B]
-        m_blocked_k = pad_and_block(mask, nk; dims=1) # -> [nk, nb, B]
-        b_mask = (one(T) .- (T.(reshape(m_blocked_q, 1, nq, nb, B)) .* T.(reshape(m_blocked_k, nk, 1, nb, B)))) .* T(-1e9)
-        mha_bias_p .+ reshape(b_mask, nk, nq, 1, nb, B)
-    end
+    b_z = stack([view(z_blocked, :, :, i, :, i, :) for i in 1:nb]; dims=4) # [num_heads, blocksize, windowsize, nb, B]
 
-    o_blocked, st_new = l.mha((x=(a_q_blocked, a_k_blocked, a_k_blocked), bias=mha_bias, mask=nothing), ps, st)
-    o = unblock_and_slice(o_blocked, N; dims=2)::Array{T,3}
-    
-    num_heads = l.mha.num_heads
-    scores = zeros(T, num_heads, nq, nk, nb, B)
-    return o, scores, st_new
+    mha_bias_p = permutedims(b_z, (3, 2, 1, 4, 5)) # [windowsize, blocksize, num_heads, nb, B]
+    apply_local_cab_mask!(mha_bias_p, mask)
+
+    o_blocked, st_new = l.mha((x=(a_q_blocked, a_k_blocked, a_k_blocked), bias=mha_bias_p, mask=nothing), ps, st)
+    o = unblock_and_slice(o_blocked, Nq; dims=2)::Array{T,3}
+
+    return o, st_new
 end
+
