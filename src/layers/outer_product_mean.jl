@@ -5,24 +5,25 @@ Computes an outer product mean from an MSA representation to update a pair repre
 This layer captures correlations between columns in the MSA.
 
 # Arguments
-- `chn_in`: Number of channels in the MSA input `m`.
-- `chn_z`: Number of channels in the output pair representation `y`.
-- `chn_hidden`: The hidden dimension for the internal projections.
+- `chn_in`: Channels in the MSA input `m`.
+- `chn_z`: Channels in the output pair representation `y`.
+- `chn_hidden`: Hidden dimension for internal projections.
 
 # Keyword Arguments
-- `eps`: A small constant for numerical stability during normalization.
-- `use_bias`: Whether to use bias in the initial projections.
+- `eps`: Small constant for numerical stability during normalization.
+- `use_bias`: Whether to use bias in initial projections.
 - `use_clamp`: If `true`, clamps the normalization factor (mask sum) to at least 1.0.
 - `project_first`: If `true` (AlphaFold3 style), applies the output projection before 
   dividing by the normalization factor. If `false` (Boltz2 style), divides first.
 
 # Inputs
-- `m`: MSA tensor. Expected shape: `[chn_in, N_res, N_seq, B]`.
+- `m`: MSA tensor. Expected shape: `[chn_in, N_res, N_seq, B]` where `chn_in` is channels,
+  `N_res` is the residue sequence length (number of positions), `N_seq` is the MSA sequence depth (number of sequences), and `B` is batch size.
 - `mask`: Optional MSA mask. Expected shape: `[N_res, N_seq, B]`.
 
 # Returns
-- `y`: The pair update tensor. Shape: `[chn_z, N_res, N_res, B]`.
-- `st`: Updated state.
+- `y`: Pair update tensor. Shape: `[chn_z, N_res, N_res, B]`.
+- `st`: Updated state containing states for `layer_norm`, `linear1`, `linear2`, and `linear_out`.
 """
 struct OuterProductMean{LN,L1,L2,LO,UC,PF} <: Lux.AbstractLuxContainerLayer{(:layer_norm, :linear1, :linear2, :linear_out)}
     layer_norm::LN

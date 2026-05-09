@@ -2,33 +2,34 @@
     AttentionPairBias(chn_in, chn_z, head_dim, num_heads; kwargs...)
 
 Attention layer that incorporates a bias derived from a pair representation `z`. This is a 
-core component in many protein structure prediction models (e.g., AlphaFold).
+core component in many protein structure prediction models (e.g., AlphaFold/Boltz).
+When `cond` is provided, the gating operation operates entirely in-place on the output `y`
+to minimize allocations.
 
 # Arguments
-- `chn_in`: Number of channels in the input sequence `x`.
-- `chn_z`: Number of channels in the pair representation `z`.
+- `chn_in`: Channels in the input sequence `x`.
+- `chn_z`: Channels in the pair representation `z`.
 - `head_dim`: Dimension of each attention head.
 - `num_heads`: Number of attention heads.
 
 # Keyword Arguments
-- `rank`: The rank of the input sequence tensor (typically 3 or 4).
-- `chn_cond`: If provided, the layer uses `AdaLN` for normalization, conditioned on a 
-  signal with `chn_cond` channels.
+- `rank`: Rank of the input sequence tensor (`3` or `4`). Is passed to the AdaLN layers.
+- `chn_cond`: If provided, uses `AdaLN` normalization conditioned on `cond` with `chn_cond` channels.
 - `use_gate`: Whether to apply gating to the attention output.
-- `use_bias`: A `NamedTuple` or `Bool` specifying bias usage for internal layers.
-- `affine`: A `NamedTuple` or `Bool` specifying affine transformation for LayerNorms.
+- `use_bias`: NamedTuple or Bool specifying bias usage for internal layers.
+- `affine`: NamedTuple or Bool specifying affine transformations for LayerNorms.
 
 # Inputs
-- `x`: Input sequence tensor. Shape: `[chn_in, N, (S, ) B]`.
-- `z`: Pair representation tensor. Shape: `[chn_z, N, N, B]`.
-- `cond`: Optional conditioning signal for `AdaLN`. Shape: `[chn_cond, N, (S, ) B]`.
-- `mask`: Optional attention mask. Shape: `[N, (S, ) B]`.
+- `x`: Input sequence tensor.
+  - 3D Shape: `[chn_in, N, B]` where `chn_in` is channels, `N` is sequence length, and `B` is batch size.
+  - 4D Shape: `[chn_in, N, S, B]` where `S` is an extra sequence/MSA dimension.
+- `z`: Pair representation tensor. Expected shape: `[chn_z, N, N, B]`.
+- `cond`: Optional conditioning signal for `AdaLN`. Shape: `[chn_cond, N, B]` or `[chn_cond, N, S, B]`.
+- `mask`: Optional attention mask. Shape: `[N, B]` or `[N, S, B]`.
 
 # Returns
-- `(y, scores)`:
-  - `y`: The output tensor. Shape matches `x`.
-  - `scores`: The attention scores. Shape: `[num_heads, N, N, (S, ) B]`.
-- `st`: Updated state.
+- `y`: Output attention tensor. Shape matches input `x`.
+- `st`: Updated state containing states for `layer_norm_in`, `layer_norm_z`, `linear_z`, `mha`, and optional `linear_out`.
 """
 struct AttentionPairBias{LNI,LNZ,LZ,MHA,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_in, :layer_norm_z, :linear_z, :mha, :linear_out)}
     layer_norm_in::LNI

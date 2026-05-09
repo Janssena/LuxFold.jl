@@ -3,27 +3,31 @@
     AdaLN(chn_a => chn_s; kwargs...)
 
 Adaptive Layer Normalization (AdaLN) layer. Normalizes the input `a` and then applies a 
-scale and shift derived from the conditioning input `s`.
+scale and shift derived from the conditioning input `s`. To minimize memory allocations,
+the modulation is performed entirely in-place on the normalized array `a`.
 
 # Arguments
-- `chn_a`: Number of channels in the input `a`.
-- `chn_s`: Number of channels in the conditioning signal `s`.
+- `chn_a`: Channels in the input `a`.
+- `chn_s`: Channels in the conditioning signal `s`.
 
 # Keyword Arguments
-- `rank`: The rank of the input tensors. Typically 3 for [C, N, B] or 4 for [C, N, S, B].
-- `epsilon`: A small constant for numerical stability in LayerNorm.
-- `affine`: A `NamedTuple` or `Bool` specifying which internal LayerNorms should have 
-  affine transformations. Defaults to `(layer_norm_a=false, layer_norm_s=true)`.
-- `use_bias`: A `NamedTuple` or `Bool` specifying which internal layers should use bias. 
+- `rank`: Rank of the input tensors. Typically `3` for 3D tensors or `4` for 4D tensors.
+- `epsilon`: Small constant for numerical stability in LayerNorm.
+- `affine`: NamedTuple or Bool specifying which internal LayerNorms should use affine parameters.
+  Defaults to `(layer_norm_a=false, layer_norm_s=true)`.
+- `use_bias`: NamedTuple or Bool specifying which internal layers should use bias parameters.
   Defaults to `false`.
 
 # Inputs
-- `a`: The input array to be normalized. Expected shape: `[chn_a, N, (S, ) B]`.
-- `s`: The conditioning signal. Expected shape: `[chn_s, N, (S, ) B]`.
+- `a`: The input array to normalize.
+  - 3D Shape: `[chn_a, N, B]` where `chn_a` is input channels, `N` is sequence length, and `B` is batch size.
+  - 4D Shape: `[chn_a, N, S, B]` where `S` is an extra spatial or sequence dimension.
+- `s`: The conditioning signal.
+  - Shape: `[chn_s, B]` (applied batch-wise) or `[chn_s, N, B]` (applied element-wise).
 
 # Returns
-- `y`: The modulated output. Shape matches `a`.
-- `st`: Updated state.
+- `a`: The modulated output array. Shape matches the input `a`.
+- `st`: Updated state containing states for `layer_norm_a`, `layer_norm_s`, `gate`, and `shift`.
 """
 struct AdaLN{LNA,LNS,S,G} <: Lux.AbstractLuxContainerLayer{(:layer_norm_a,:layer_norm_s,:shift,:gate)}
     layer_norm_a::LNA

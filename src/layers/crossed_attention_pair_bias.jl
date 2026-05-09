@@ -12,31 +12,27 @@ both global and local (window-based) attention modes.
 
 # Arguments
 - `chn_q`: Channels for the query input `a`.
-- `chn_k`: Channels for the key input.
+- `chn_k`: Channels for the key/value input.
 - `chn_v`: Channels for the value input.
-- `chn_cond`: Channels for the conditioning signal `s`.
+- `chn_cond`: Channels for the conditioning signal `cond`/`s`.
 - `chn_z`: Channels for the pair representation `z`.
 - `head_dim`: Dimension of each attention head.
 - `num_heads`: Number of attention heads.
 
 # Keyword Arguments
-- `use_ada_layer_norm`: If `true`, uses Adaptive Layer Normalization (`AdaLN`) conditioned on `s`.
+- `use_ada_layer_norm`: If `true`, uses Adaptive Layer Normalization (`AdaLN`) conditioned on `cond`.
 - `n_query`: Block size for queries in local attention. If `nothing`, global attention is used.
-- `n_key`: Block size for keys/values in local attention.
-- `inf`: The value used for masking (defaults to `1e9`).
+- `n_key`: Block size (window size) for keys/values in local attention.
 
 # Inputs
-- `a`: The query sequence tensor. Shape: `[chn_q, N, B]`.
-- `z`: The pair representation tensor. Shape: `[chn_z, Nq, Nk, B]`.
-- `s`: Optional conditioning signal. Shape: `[chn_cond, B]` or `[chn_cond, N, B]`.
-- `mask`: Optional attention mask. Shape: `[N, B]`.
+- `a`: The query sequence tensor. Shape: `[chn_q, Nq, B]` where `Nq` is the query sequence length and `B` is batch size.
+- `z`: The pair representation tensor. Shape: `[chn_z, Nq, Nk, B]` where `Nk` is the key sequence length.
+- `cond` (or `s`): Optional conditioning signal. Shape: `[chn_cond, B]` or `[chn_cond, Nq, B]`.
+- `mask`: Optional attention mask. Shape: `[Nk, B]`.
 
 # Returns
-- `((y, scores), st)`:
-  - `y`: The output tensor. Shape matches `a`.
-  - `scores`: The attention scores. Shape: `[num_heads, Nq, Nk, 1, B]` (global) 
-    or `[num_heads, nq, nk, nb, B]` (local).
-- `st`: Updated state.
+- `y`: Output cross-attention tensor. Shape: `[chn_q, Nq, B]`.
+- `st`: Updated state containing states for `layer_norm_a_q`, `layer_norm_a_k`, `linear_z`, `mha`, and `linear_out`.
 """
 struct CrossedAttentionPairBias{LOCAL,LNAQ,LNAK,LZ,MHA,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_a_q, :layer_norm_a_k, :linear_z, :mha, :linear_out)}
     local_mode::LOCAL
