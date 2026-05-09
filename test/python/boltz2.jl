@@ -94,7 +94,7 @@ class Boltz2PairWeightedAveraging(nn.Module):
         return o
 
 
-class AttentionPairBias(nn.Module):
+class Boltz2AttentionPairBias(nn.Module):
     # Attention pair bias layer.
 
     def __init__(

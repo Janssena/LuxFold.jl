@@ -5,10 +5,14 @@ authors = ["Janssena <alexanderjanssen@live.com>"]
 
 [deps]
 Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
+LuxTriangleAttention = "3d5d7496-9328-4173-860c-6da38a33fff6"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Reexport = "189a3867-3050-52da-a836-e630ba90ab69"
 Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
 
 [compat]
 Lux = "1.31.4"
+LuxTriangleAttention = "0.3.0"
 Random = "1.11.0"
+Reexport = "1.2.2"
 Static = "1.3.1"
