@@ -50,23 +50,19 @@ function CrossedAttentionPairBias(
     blocksize::Union{Nothing,Int}=nothing,
     windowsize::Union{Nothing,Int}=nothing
 )
-    # 1. Normalization
+    # TODO: use_bias handling
     if use_adaln
-        # AF3 AdaLN usually has no bias in its internal LayerNorms
         layer_norm_a_q = AdaLN(chn_q => chn_cond; rank=3, use_bias=(false, (gate=true, shift=true)))
         layer_norm_a_k = AdaLN(chn_k => chn_cond; rank=3, use_bias=(false, (gate=true, shift=true)))
         linear_out = Lux.Dense(chn_cond => chn_q, Lux.sigmoid; use_bias=true)
     else
-        # AF3 CrossAttention LayerNorm has bias by default
         layer_norm_a_q = Lux.LayerNorm((chn_q, 1); dims=1)
         layer_norm_a_k = Lux.LayerNorm((chn_k, 1); dims=1)
         linear_out = Lux.NoOpLayer()
     end
 
-    # 2. Pair Bias Projection
     linear_z = Lux.Dense(chn_z => num_heads; use_bias=true)
 
-    # 3. Attention
     mha = Attention(
         chn_q, chn_k, chn_v, head_dim, num_heads;
         use_gate=true, fuse_qkv=false,
@@ -80,7 +76,6 @@ function CrossedAttentionPairBias(
     )
 end
 
-# Top-level Dispatches
 (l::CrossedAttentionPairBias)(inputs::NamedTuple, ps, st) = l(
     inputs.a, inputs.z,
     get(inputs, :cond, nothing),
@@ -93,7 +88,6 @@ end
 (l::CrossedAttentionPairBias)(a, z, ::Nothing, ps, st) = l(a, z, nothing, nothing, ps, st)
 (l::CrossedAttentionPairBias)(a, z, mask::AbstractArray{Bool}, ps, st) = l(a, z, nothing, mask, ps, st)
 
-# Global attention masking
 @inline apply_cab_mask!(bias_z, ::Nothing) = nothing
 
 @inline function apply_cab_mask!(bias_z::AbstractArray{T}, mask::AbstractArray; neginf=T == Float64 ? -1e9 : -floatmax(T)) where T
@@ -103,7 +97,6 @@ end
     return nothing
 end
 
-# Local attention masking (pure boolean broadcasting)
 @inline apply_local_cab_mask!(mha_bias_p, ::Nothing) = nothing
 
 @inline function apply_local_cab_mask!(mha_bias_p::AbstractArray{T}, mask::AbstractArray; neginf=T == Float64 ? -1e9 : -floatmax(T)) where T
@@ -120,16 +113,12 @@ end
     return nothing
 end
 
-# Functor for unconditioned inputs (cond === Nothing)
 function (l::CrossedAttentionPairBias)(a, z, ::Nothing, mask, ps, st)
-    # 1. Normalize without cond
     a_q_ln, st_q = l.layer_norm_a_q(a, ps.layer_norm_a_q, st.layer_norm_a_q)
     a_k_ln, st_k = l.layer_norm_a_k(a, ps.layer_norm_a_k, st.layer_norm_a_k)
 
-    # 2. Pair Bias Projection
     bias_z, st_lz = l.linear_z(z, ps.linear_z, st.linear_z)
 
-    # 3. MHA (Global vs Local)
     y, st_mha = _run_mha(l, a_q_ln, a_k_ln, bias_z, mask, ps.mha, st.mha)
 
     st_final = (
@@ -143,19 +132,14 @@ function (l::CrossedAttentionPairBias)(a, z, ::Nothing, mask, ps, st)
     return y, st_final
 end
 
-# Functor for conditioned inputs (cond::AbstractArray)
 function (l::CrossedAttentionPairBias)(a, z, cond::AbstractArray, mask, ps, st)
-    # 1. Normalize with cond
     a_q_ln, st_q = l.layer_norm_a_q(a, cond, ps.layer_norm_a_q, st.layer_norm_a_q)
     a_k_ln, st_k = l.layer_norm_a_k(a, cond, ps.layer_norm_a_k, st.layer_norm_a_k)
 
-    # 2. Pair Bias Projection
     bias_z, st_lz = l.linear_z(z, ps.linear_z, st.linear_z)
 
-    # 3. MHA (Global vs Local)
     y, st_mha = _run_mha(l, a_q_ln, a_k_ln, bias_z, mask, ps.mha, st.mha)
 
-    # 4. In-place Gating (AdaLN)
     g, st_lo = l.linear_out(cond, ps.linear_out, st.linear_out)
     @. y *= g
 
@@ -183,11 +167,10 @@ function _run_mha(l::CrossedAttentionPairBias{<:NTuple{2,Int}}, a_q, a_k, bias_z
     T = eltype(a_q)
     blocksize, windowsize = l.local_mode
 
-    # 1. Block inputs
     a_q_blocked = pad_and_block(a_q, blocksize; dims=2) # -> [chn_in, blocksize, nb, B]
     a_k_blocked = pad_and_block(a_k, windowsize; dims=2) # -> [chn_in, windowsize, nb, B]
 
-    # 2. Block pair bias z: [num_heads, Nq, Nk, B] -> [num_heads, blocksize, nb, windowsize, nb, B]
+    # [num_heads, Nq, Nk, B] -> [num_heads, blocksize, nb, windowsize, nb, B]
     z_blocked = pad_and_block(bias_z, (blocksize, windowsize); dims=(2, 3))
     nb = size(z_blocked, 5)
     b_z = stack([view(z_blocked, :, :, i, :, i, :) for i in 1:nb]; dims=4) # [num_heads, blocksize, windowsize, nb, B]
