@@ -24,7 +24,7 @@ This layer captures correlations between columns in the MSA.
 - `y`: The pair update tensor. Shape: `[chn_z, N_res, N_res, B]`.
 - `st`: Updated state.
 """
-struct OuterProductMean{LN, L1, L2, LO, UC, PF} <: Lux.AbstractLuxContainerLayer{(:layer_norm, :linear1, :linear2, :linear_out)}
+struct OuterProductMean{LN,L1,L2,LO,UC,PF} <: Lux.AbstractLuxContainerLayer{(:layer_norm, :linear1, :linear2, :linear_out)}
     layer_norm::LN
     linear1::L1
     linear2::L2
@@ -50,7 +50,7 @@ function OuterProductMean(
 end
 
 (l::OuterProductMean)(inputs::NamedTuple, ps, st) = l(
-    inputs.m, 
+    inputs.m,
     get(inputs, :mask, nothing),
     ps, st
 )
@@ -72,50 +72,45 @@ end
     return y, st_out
 end
 
-# Highly optimized in-place mask application
 @inline apply_opm_mask!(a, b, ::Nothing) = nothing
 
-@inline function apply_opm_mask!(a::AbstractArray{T}, b::AbstractArray{T}, mask::AbstractArray{<:Any, 3}) where T
+@inline function apply_opm_mask!(a::AbstractArray{T}, b::AbstractArray{T}, mask::AbstractArray{<:Any,3}) where T
     _zero = zero(T)
-    mask_expanded = reshape(mask, 1, size(mask)...) # O(1) reshape to [1, N_res, N_seq, B]
+    mask_expanded = reshape(mask, 1, size(mask)...) # [1, N, S, B]
     @. a = ifelse(mask_expanded, a, _zero)
     @. b = ifelse(mask_expanded, b, _zero)
     return nothing
 end
 
-# Dispatch-based norm computation
 @inline _compute_norm(m, ::Nothing, N_res, N_seq, B, T) = fill!(similar(m, 1, N_res, N_res, B), T(N_seq))
 
-@inline function _compute_norm(m, mask::AbstractArray{<:Any, 3}, N_res, N_seq, B, T)
+@inline function _compute_norm(m, mask::AbstractArray{<:Any,3}, N_res, N_seq, B, T)
     norm = Lux.batched_matmul(T.(mask), T.(mask); lhs_contracting_dim=2, rhs_contracting_dim=2)
     return reshape(norm, 1, N_res, N_res, B)
 end
 
-# Unified Forward Method
-function (l::OuterProductMean)(m::AbstractArray{T, 4}, mask, ps, st) where T
+function (l::OuterProductMean)(m::AbstractArray{T,4}, mask, ps, st) where T
     chn_in, N_res, N_seq, B = size(m)
     chn_hidden = size(ps.linear1.weight, 1)
 
     m_ln, st_ln = l.layer_norm(m, ps.layer_norm, st.layer_norm)
-    
-    a, st_l1 = l.linear1(m_ln, ps.linear1, st.linear1) # [chn_hidden, N_res, N_seq, B]
-    b, st_l2 = l.linear2(m_ln, ps.linear2, st.linear2) # [chn_hidden, N_res, N_seq, B]
 
-    # In-place masking with zero-allocation dispatch
+    a, st_l1 = l.linear1(m_ln, ps.linear1, st.linear1) # [H, N, S, B]
+    b, st_l2 = l.linear2(m_ln, ps.linear2, st.linear2) # [H, N, S, B]
+
     apply_opm_mask!(a, b, mask)
 
     a_flat = reshape(a, chn_hidden * N_res, N_seq, B)
     b_flat = reshape(b, chn_hidden * N_res, N_seq, B)
-    
+
     outer = Lux.batched_matmul(a_flat, b_flat; lhs_contracting_dim=2, rhs_contracting_dim=2)
     outer = reshape(outer, chn_hidden, N_res, chn_hidden, N_res, B)
     outer = permutedims(outer, (3, 1, 2, 4, 5))
     outer = reshape(outer, chn_hidden * chn_hidden, N_res, N_res, B)
 
-    # Dispatch-based norm computation
     norm = _compute_norm(m, mask, N_res, N_seq, B, T)
     norm_clamped = _apply_normalization(norm, l.use_clamp, l.eps, T)
-    
+
     y, st_out = _project_and_normalize(outer, norm_clamped, l.linear_out, ps.linear_out, st.linear_out, l.project_first)
 
     return y, (layer_norm=st_ln, linear1=st_l1, linear2=st_l2, linear_out=st_out)
