@@ -16,13 +16,13 @@ overhead, the gating operation is performed fully in-place on the output project
 - `eps`: Small constant for numerical stability in LayerNorm.
 
 # Inputs
-- `m`: MSA tensor. Expected shape: `[chn_msa, N_res, N_seq, B]` where `N_res` is the residue
-  sequence length (number of positions), `N_seq` is the MSA sequence depth (number of sequences), and `B` is batch size.
-- `z`: Pair representation tensor. Expected shape: `[chn_pair, N_res, N_res, B]`.
-- `mask`: Optional attention mask. Expected shape: `[N_res, N_res, B]`.
+- `m`: MSA tensor. Expected shape: `[chn_msa, N, S, B]` where `N` is the residue
+  sequence length (number of positions), `S` is the MSA sequence depth (number of sequences), and `B` is batch size.
+- `z`: Pair representation tensor. Expected shape: `[chn_pair, N, N, B]`.
+- `mask`: Optional attention mask. Expected shape: `[N, N, B]`.
 
 # Returns
-- `y`: Updated MSA tensor. Shape: `[chn_msa, N_res, N_seq, B]`.
+- `y`: Updated MSA tensor. Shape: `[chn_msa, N, S, B]`.
 - `st`: Updated state containing states for `layer_norm_m`, `layer_norm_z`, `linear_v`, `linear_z`, `linear_g`, and `linear_out`.
 """
 struct PairWeightedAveraging{LNM,LNZ,LV,LZ,LG,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_m, :layer_norm_z, :linear_v, :linear_z, :linear_g, :linear_out)}

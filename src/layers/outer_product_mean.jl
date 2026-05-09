@@ -17,12 +17,12 @@ This layer captures correlations between columns in the MSA.
   dividing by the normalization factor. If `false` (Boltz2 style), divides first.
 
 # Inputs
-- `m`: MSA tensor. Expected shape: `[chn_in, N_res, N_seq, B]` where `chn_in` is channels,
-  `N_res` is the residue sequence length (number of positions), `N_seq` is the MSA sequence depth (number of sequences), and `B` is batch size.
-- `mask`: Optional MSA mask. Expected shape: `[N_res, N_seq, B]`.
+- `m`: MSA tensor. Expected shape: `[chn_in, N, S, B]` where `chn_in` is channels,
+  `N` is the residue sequence length (number of positions), `S` is the MSA sequence depth (number of sequences), and `B` is batch size.
+- `mask`: Optional MSA mask. Expected shape: `[N, S, B]`.
 
 # Returns
-- `y`: Pair update tensor. Shape: `[chn_z, N_res, N_res, B]`.
+- `y`: Pair update tensor. Shape: `[chn_z, N, N, B]`.
 - `st`: Updated state containing states for `layer_norm`, `linear1`, `linear2`, and `linear_out`.
 """
 struct OuterProductMean{LN,L1,L2,LO,UC,PF} <: Lux.AbstractLuxContainerLayer{(:layer_norm, :linear1, :linear2, :linear_out)}
@@ -83,15 +83,15 @@ end
     return nothing
 end
 
-@inline _compute_norm(m, ::Nothing, N_res, N_seq, B, T) = fill!(similar(m, 1, N_res, N_res, B), T(N_seq))
+@inline _compute_norm(m, ::Nothing, N, S, B, T) = fill!(similar(m, 1, N, N, B), T(S))
 
-@inline function _compute_norm(m, mask::AbstractArray{<:Any,3}, N_res, N_seq, B, T)
+@inline function _compute_norm(m, mask::AbstractArray{<:Any,3}, N, S, B, T)
     norm = Lux.batched_matmul(T.(mask), T.(mask); lhs_contracting_dim=2, rhs_contracting_dim=2)
-    return reshape(norm, 1, N_res, N_res, B)
+    return reshape(norm, 1, N, N, B)
 end
 
 function (l::OuterProductMean)(m::AbstractArray{T,4}, mask, ps, st) where T
-    chn_in, N_res, N_seq, B = size(m)
+    chn_in, N, S, B = size(m)
     chn_hidden = size(ps.linear1.weight, 1)
 
     m_ln, st_ln = l.layer_norm(m, ps.layer_norm, st.layer_norm)
@@ -101,15 +101,15 @@ function (l::OuterProductMean)(m::AbstractArray{T,4}, mask, ps, st) where T
 
     apply_opm_mask!(a, b, mask)
 
-    a_flat = reshape(a, chn_hidden * N_res, N_seq, B)
-    b_flat = reshape(b, chn_hidden * N_res, N_seq, B)
+    a_flat = reshape(a, chn_hidden * N, S, B)
+    b_flat = reshape(b, chn_hidden * N, S, B)
 
     outer = Lux.batched_matmul(a_flat, b_flat; lhs_contracting_dim=2, rhs_contracting_dim=2)
-    outer = reshape(outer, chn_hidden, N_res, chn_hidden, N_res, B)
+    outer = reshape(outer, chn_hidden, N, chn_hidden, N, B)
     outer = permutedims(outer, (3, 1, 2, 4, 5))
-    outer = reshape(outer, chn_hidden * chn_hidden, N_res, N_res, B)
+    outer = reshape(outer, chn_hidden * chn_hidden, N, N, B)
 
-    norm = _compute_norm(m, mask, N_res, N_seq, B, T)
+    norm = _compute_norm(m, mask, N, S, B, T)
     norm_clamped = _apply_normalization(norm, l.use_clamp, l.eps, T)
 
     y, st_out = _project_and_normalize(outer, norm_clamped, l.linear_out, ps.linear_out, st.linear_out, l.project_first)

@@ -14,25 +14,25 @@ both global and local (window-based) attention modes.
 - `chn_q`: Channels for the query input `a`.
 - `chn_k`: Channels for the key/value input.
 - `chn_v`: Channels for the value input.
-- `chn_cond`: Channels for the conditioning signal `cond`/`s`.
+- `chn_cond`: Channels for the conditioning signal `cond`.
 - `chn_z`: Channels for the pair representation `z`.
 - `head_dim`: Dimension of each attention head.
 - `num_heads`: Number of attention heads.
 
 # Keyword Arguments
-- `use_ada_layer_norm`: If `true`, uses Adaptive Layer Normalization (`AdaLN`) conditioned on `cond`.
-- `n_query`: Block size for queries in local attention. If `nothing`, global attention is used.
-- `n_key`: Block size (window size) for keys/values in local attention.
+- `use_adaln`: If `true`, uses Adaptive Layer Normalization (`AdaLN`) conditioned on `cond`.
+- `blocksize`: Block size for queries in local attention. If `nothing`, global attention is used.
+- `windowsize`: Window size for keys/values in local attention.
 
 # Inputs
 - `a`: The query sequence tensor. Shape: `[chn_q, Nq, B]` where `Nq` is the query sequence length and `B` is batch size.
 - `z`: The pair representation tensor. Shape: `[chn_z, Nq, Nk, B]` where `Nk` is the key sequence length.
-- `cond` (or `s`): Optional conditioning signal. Shape: `[chn_cond, B]` or `[chn_cond, Nq, B]`.
+- `cond`: Optional conditioning signal. Shape: `[chn_cond, B]` or `[chn_cond, Nq, B]`.
 - `mask`: Optional attention mask. Shape: `[Nk, B]`.
 
 # Returns
 - `y`: Output cross-attention tensor. Shape: `[chn_q, Nq, B]`.
-- `st`: Updated state containing states for `layer_norm_a_q`, `layer_norm_a_k`, `linear_z`, `mha`, and `linear_out`.
+- `st`: Updated state.
 """
 struct CrossedAttentionPairBias{LOCAL,LNAQ,LNAK,LZ,MHA,LO} <: Lux.AbstractLuxContainerLayer{(:layer_norm_a_q, :layer_norm_a_k, :linear_z, :mha, :linear_out)}
     local_mode::LOCAL
@@ -46,12 +46,12 @@ end
 function CrossedAttentionPairBias(
     chn_q::Int, chn_k::Int, chn_v::Int, chn_cond::Int, chn_z::Int,
     head_dim::Int, num_heads::Int;
-    use_ada_layer_norm::Bool=true,
-    n_query::Union{Nothing,Int}=nothing,
-    n_key::Union{Nothing,Int}=nothing
+    use_adaln::Bool=true,
+    blocksize::Union{Nothing,Int}=nothing,
+    windowsize::Union{Nothing,Int}=nothing
 )
     # 1. Normalization
-    if use_ada_layer_norm
+    if use_adaln
         # AF3 AdaLN usually has no bias in its internal LayerNorms
         layer_norm_a_q = AdaLN(chn_q => chn_cond; rank=3, use_bias=(false, (gate=true, shift=true)))
         layer_norm_a_k = AdaLN(chn_k => chn_cond; rank=3, use_bias=(false, (gate=true, shift=true)))
@@ -73,7 +73,7 @@ function CrossedAttentionPairBias(
         use_bias=(false, (gate=false,))
     )
 
-    local_mode = isnothing(n_query) ? nothing : (n_query, n_key)
+    local_mode = isnothing(blocksize) || isnothing(windowsize) ? nothing : (blocksize, windowsize)
 
     return CrossedAttentionPairBias(
         local_mode, layer_norm_a_q, layer_norm_a_k, linear_z, mha, linear_out
@@ -83,7 +83,7 @@ end
 # Top-level Dispatches
 (l::CrossedAttentionPairBias)(inputs::NamedTuple, ps, st) = l(
     inputs.a, inputs.z,
-    get(inputs, :cond, get(inputs, :s, nothing)),
+    get(inputs, :cond, nothing),
     get(inputs, :mask, nothing),
     ps, st
 )

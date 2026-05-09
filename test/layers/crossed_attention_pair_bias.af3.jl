@@ -10,8 +10,8 @@ rng = Random.Xoshiro(42)
     num_heads = 4
 
     configs = [
-        (name="Global", n_query=nothing, n_key=nothing),
-        (name="Local", n_query=4, n_key=4)
+        (name="Global", blocksize=nothing, windowsize=nothing),
+        (name="Local", blocksize=4, windowsize=4)
     ]
 
     mask_cfg = (
@@ -36,15 +36,15 @@ rng = Random.Xoshiro(42)
                 jl_layer = CrossedAttentionPairBias(
                     chn_in, chn_in, chn_in, isnothing(chn_cond) ? 0 : chn_cond, chn_z,
                     head_dim, num_heads;
-                    use_ada_layer_norm=use_ada,
-                    n_query=config.n_query, n_key=config.n_key
+                    use_adaln=use_ada,
+                    blocksize=config.blocksize, windowsize=config.windowsize
                 )
                 ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
                 py_layer = py"AF3CrossAttentionPairBias"(
                     chn_in, chn_in, chn_in, isnothing(chn_cond) ? 0 : chn_cond,
                     chn_z, head_dim, num_heads, use_ada,
-                    config.n_query, config.n_key
+                    config.blocksize, config.windowsize
                 ).to(py_dtype(T))
 
                 # 3. Synchronization
