@@ -71,6 +71,6 @@ function (l::AdaLN)(a::AbstractArray, s::AbstractArray, ps, st)
     s, layer_norm_s = l.layer_norm_s(s, ps.layer_norm_s, st.layer_norm_s)
     g, gate = l.gate(s, ps.gate, st.gate)
     sh, shift = l.shift(s, ps.shift, st.shift)
-    y = @. g * a + sh
-    return y, (; layer_norm_a, layer_norm_s, gate, shift) 
+    @. a = g * a + sh
+    return a, (; layer_norm_a, layer_norm_s, gate, shift) 
 end

@@ -119,11 +119,11 @@ function (l::AttentionPairBias)(x, z, cond::AbstractArray, mask, ps, st)
     z, layer_norm_z = l.layer_norm_z(z, ps.layer_norm_z, st.layer_norm_z)
     bias, linear_z = l.linear_z(z, ps.linear_z, st.linear_z)
 
-    attn, mha = l.mha(x, bias, mask, ps.mha, st.mha)
+    y, mha = l.mha(x, bias, mask, ps.mha, st.mha)
 
+    # TODO: The below operation should be available from LuxTriangleAttention and have a custom Zygote rules:
     g, linear_out = l.linear_out(cond, ps.linear_out, st.linear_out)
-
-    y = @. g * attn
+    @. y *= g
 
     return y, (; layer_norm_in, layer_norm_z, linear_z, mha, linear_out)
 end
