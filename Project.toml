@@ -1,0 +1,12 @@
+name = "LuxFold"
+uuid = "69c8268e-2bae-4535-bf3e-f4f1aa768a35"
+version = "0.1.0"
+authors = ["Janssena <alexanderjanssen@live.com>"]
+
+[deps]
+Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
+LuxFoldCore = "52160431-febe-4e64-94fd-5e70c5cfc12c"
+LuxTriangleAttention = "3d5d7496-9328-4173-860c-6da38a33fff6"
+
+[compat]
+Lux = "1.31.4"
