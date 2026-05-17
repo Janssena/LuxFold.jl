@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/logo.svg" alt="LuxFold Logo" width="300" />
+  <img src="assets/logo.svg" alt="LuxFold Logo" width="250" />
 </p>
 
 # LuxFold.jl
