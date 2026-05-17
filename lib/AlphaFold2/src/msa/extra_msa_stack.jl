@@ -1,5 +1,5 @@
-struct ExtraMsaStack <: Lux.AbstractExplicitContainerLayer{(:blocks,)}
-    blocks::NTuple{N, ExtraMsaBlock} where N
+struct ExtraMsaStack <: Lux.AbstractLuxContainerLayer{(:blocks,)}
+    blocks::NTuple{N,ExtraMsaBlock} where N
 end
 
 function ExtraMsaStack(config::NamedTuple)

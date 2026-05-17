@@ -1,4 +1,4 @@
-struct DistogramHead <: Lux.AbstractExplicitContainerLayer{(:linear,)}
+struct DistogramHead <: Lux.AbstractLuxContainerLayer{(:linear,)}
     linear::Lux.Dense
 end
 
@@ -12,7 +12,7 @@ function (m::DistogramHead)(z, ps, st)
     return out, (linear=st_lin,)
 end
 
-struct PLDDTHead <: Lux.AbstractExplicitContainerLayer{(:linear,)}
+struct PLDDTHead <: Lux.AbstractLuxContainerLayer{(:linear,)}
     linear::Lux.Dense
 end
 
@@ -25,7 +25,7 @@ function (m::PLDDTHead)(s, ps, st)
     return out, (linear=st_lin,)
 end
 
-struct MaskedMSAHead <: Lux.AbstractExplicitContainerLayer{(:linear,)}
+struct MaskedMSAHead <: Lux.AbstractLuxContainerLayer{(:linear,)}
     linear::Lux.Dense
 end
 
@@ -38,7 +38,7 @@ function (m::MaskedMSAHead)(m_rep, ps, st)
     return out, (linear=st_lin,)
 end
 
-struct ExperimentallyResolvedHead <: Lux.AbstractExplicitContainerLayer{(:linear,)}
+struct ExperimentallyResolvedHead <: Lux.AbstractLuxContainerLayer{(:linear,)}
     linear::Lux.Dense
 end
 

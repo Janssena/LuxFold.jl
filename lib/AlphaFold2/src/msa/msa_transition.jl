@@ -1,4 +1,4 @@
-struct MSATransition <: Lux.AbstractExplicitContainerLayer{(:layer_norm, :linear_up, :linear_down)}
+struct MSATransition <: Lux.AbstractLuxContainerLayer{(:layer_norm, :linear_up, :linear_down)}
     layer_norm::Lux.LayerNorm
     linear_up::Lux.Dense
     linear_down::Lux.Dense

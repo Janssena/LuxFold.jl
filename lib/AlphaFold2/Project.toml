@@ -1,0 +1,4 @@
+name = "AlphaFold2"
+uuid = "4dbb17d9-4ae6-4c31-a027-e692e5f6258c"
+version = "0.1.0"
+authors = ["Janssena <alexanderjanssen@live.com>"]
