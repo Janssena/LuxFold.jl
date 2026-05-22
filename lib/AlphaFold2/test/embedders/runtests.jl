@@ -1,2 +1,6 @@
 include("input_embedder.test.jl")
 include("relative_position_encoding.test.jl")
+include("recycling_embedder.test.jl")
+include("extra_msa_embedder.test.jl")
+include("preembedding_embedder.test.jl")
+include("utils.test.jl")
