@@ -1,12 +1,17 @@
 import Pkg
 
 python_path = abspath(joinpath(@__DIR__, "..", "..", ".venv", "bin", "python"))
+@info "Activating python env at $(abspath(python_path, "..", ".."))"
 ENV["PYTHON"] = python_path
 Pkg.build("PyCall")
 
 using PyCall
 
 const torch = pyimport("torch")
+
+convert_types(::Type{Float64}) = Lux.f64
+convert_types(::Type{Float32}) = Lux.f32
+convert_types(::Type{Float16}) = Lux.f16
 
 py_dtype(::Type{Float64}) = torch.float64
 py_dtype(::Type{Float32}) = torch.float32
