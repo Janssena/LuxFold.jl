@@ -1,5 +1,5 @@
 const PyInputEmbedder = pyimport("openfold.model.embedders").InputEmbedder
-const TF_DIM, MSA_DIM, C_Z, C_M, RELPOS_K = 22, 49, 128, 256, 32
+const CHN_TARGET_FEAT, CHN_MSA_FEAT, CHN_PAIR, CHN_MSA, RELPOS_K = 22, 49, 128, 256, 32
 
 rng = Random.Xoshiro(42)
 
@@ -9,20 +9,20 @@ rng = Random.Xoshiro(42)
 
         for T in [Float64, Float32, Float16]
             @testset "$T" begin
-                jl_layer = InputEmbedder(TF_DIM, MSA_DIM, C_Z, C_M, RELPOS_K)
+                jl_layer = InputEmbedder(CHN_TARGET_FEAT, CHN_MSA_FEAT, CHN_PAIR, CHN_MSA, RELPOS_K)
                 jl_ps, jl_st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                py_layer = PyInputEmbedder(TF_DIM, MSA_DIM, C_Z, C_M, RELPOS_K)
+                py_layer = PyInputEmbedder(CHN_TARGET_FEAT, CHN_MSA_FEAT, CHN_PAIR, CHN_MSA, RELPOS_K)
 
-                sync_dense!(py_layer.linear_tf_z_i, jl_ps.linear_tf_z_i)
-                sync_dense!(py_layer.linear_tf_z_j, jl_ps.linear_tf_z_j)
-                sync_dense!(py_layer.linear_tf_m, jl_ps.linear_tf_m)
-                sync_dense!(py_layer.linear_msa_m, jl_ps.linear_msa_m)
+                sync_dense!(py_layer.linear_tf_z_i, jl_ps.linear_i)
+                sync_dense!(py_layer.linear_tf_z_j, jl_ps.linear_j)
+                sync_dense!(py_layer.linear_tf_m, jl_ps.linear_target_msa)
+                sync_dense!(py_layer.linear_msa_m, jl_ps.linear_msa)
                 sync_dense!(py_layer.linear_relpos, jl_ps.relpos_encoding.linear)
 
-                target_feat = randn(rng, T, TF_DIM, N, B)
+                target_feat = randn(rng, T, CHN_TARGET_FEAT, N, B)
                 residue_index = rand(rng, 1:100, N, B)
-                msa_feat = randn(rng, T, MSA_DIM, N, S, B)
+                msa_feat = randn(rng, T, CHN_MSA_FEAT, N, S, B)
 
                 (m_jl, z_jl), _ = jl_layer(target_feat, residue_index, msa_feat, jl_ps, jl_st)
 

@@ -1,43 +1,71 @@
-struct InputEmbedder{L1,L2,L3,L4,RE} <: Lux.AbstractLuxContainerLayer{(:linear_tf_z_i, :linear_tf_z_j, :linear_tf_m, :linear_msa_m, :relpos_encoding)}
-    linear_tf_z_i::L1
-    linear_tf_z_j::L2
-    linear_tf_m::L3
-    linear_msa_m::L4
+"""
+    InputEmbedder(chn_target_feat, chn_msa_feat, chn_pair, chn_msa, relpos_k; is_multimer=false, use_bias=true)
+
+Embedder for initial MSA and pair representations from target features, residue indices,
+and MSA features (Algorithm 3). Delegates relative positional encoding (Algorithm 4)
+to a `RelativePositionEncoding` sub-layer.
+
+# Arguments
+- `chn_target_feat`: Channel dimension of target features (e.g., 22 for monomer)
+- `chn_msa_feat`: Channel dimension of MSA features (e.g., 49 for monomer)
+- `chn_pair`: Channel dimension of the pair embedding (e.g., c_z = 128)
+- `chn_msa`: Channel dimension of the MSA embedding (e.g., c_m = 256)
+- `relpos_k`: Window size for relative positional encoding (default: 32)
+
+# Keyword Arguments
+- `is_multimer`: Forwarded to `RelativePositionEncoding` constructor (default: false)
+- `use_bias`: Bool or NamedTuple for linear layer bias (default: true)
+
+# Inputs
+- `target_feat`: Target feature tensor of shape `[chn_target_feat, N, B]`
+- `residue_index`: Integer tensor of shape `[N, B]`
+- `msa_feat`: MSA feature tensor of shape `[chn_msa_feat, N, S, B]`
+
+# Returns
+- `m`: MSA embedding tensor of shape `[chn_msa, N, S, B]`
+- `z`: Pair embedding tensor of shape `[chn_pair, N, N, B]`
+- `st`: Updated state containing states for all sub-layers
+"""
+struct InputEmbedder{L1,L2,L3,L4,RE} <: Lux.AbstractLuxContainerLayer{(:linear_i, :linear_j, :linear_target_msa, :linear_msa, :relpos_encoding)}
+    linear_i::L1
+    linear_j::L2
+    linear_target_msa::L3
+    linear_msa::L4
     relpos_encoding::RE
 end
 
 function InputEmbedder(
-    tf_dim::Int, msa_dim::Int, c_z::Int, c_m::Int, relpos_k::Int;
+    chn_target_feat::Int, chn_msa_feat::Int, chn_pair::Int, chn_msa::Int, relpos_k::Int;
     is_multimer=false, use_bias=true
 )
-    use_bias = resolve_defaults(use_bias, (:linear_tf_z_i, :linear_tf_z_j, :linear_tf_m, :linear_msa_m))
+    use_bias = resolve_defaults(use_bias, (:linear_i, :linear_j, :linear_target_msa, :linear_msa))
 
     return InputEmbedder(
-        Lux.Dense(tf_dim => c_z; use_bias=use_bias.linear_tf_z_i),
-        Lux.Dense(tf_dim => c_z; use_bias=use_bias.linear_tf_z_j),
-        Lux.Dense(tf_dim => c_m; use_bias=use_bias.linear_tf_m),
-        Lux.Dense(msa_dim => c_m; use_bias=use_bias.linear_msa_m),
-        RelativePositionEncoding(c_z, relpos_k; is_multimer),
+        Lux.Dense(chn_target_feat => chn_pair; use_bias=use_bias.linear_i),
+        Lux.Dense(chn_target_feat => chn_pair; use_bias=use_bias.linear_j),
+        Lux.Dense(chn_target_feat => chn_msa; use_bias=use_bias.linear_target_msa),
+        Lux.Dense(chn_msa_feat => chn_msa; use_bias=use_bias.linear_msa),
+        RelativePositionEncoding(chn_pair, relpos_k; is_multimer),
     )
 end
 
 function (l::InputEmbedder)(target_feat, residue_index, msa_feat, ps, st)
-    c_z, c_m = l.linear_tf_z_i.out_dims, l.linear_tf_m.out_dims
+    chn_pair, chn_msa = l.linear_i.out_dims, l.linear_target_msa.out_dims
     N, B = size(residue_index)
 
     z_relpos, st_relpos = l.relpos_encoding(residue_index, ps.relpos_encoding, st.relpos_encoding)
 
-    tf_i, st_tf_i = l.linear_tf_z_i(target_feat, ps.linear_tf_z_i, st.linear_tf_z_i)
-    tf_j, st_tf_j = l.linear_tf_z_j(target_feat, ps.linear_tf_z_j, st.linear_tf_z_j)
-    z = z_relpos .+ reshape(tf_i, c_z, N, 1, B) .+ reshape(tf_j, c_z, 1, N, B)
+    target_pair_i, st_tpi = l.linear_i(target_feat, ps.linear_i, st.linear_i)
+    target_pair_j, st_tpj = l.linear_j(target_feat, ps.linear_j, st.linear_j)
+    z = z_relpos .+ reshape(target_pair_i, chn_pair, N, 1, B) .+ reshape(target_pair_j, chn_pair, 1, N, B)
 
-    tf_m, st_tf_m = l.linear_tf_m(target_feat, ps.linear_tf_m, st.linear_tf_m)
-    msa, st_msa_m = l.linear_msa_m(msa_feat, ps.linear_msa_m, st.linear_msa_m)
-    m = msa .+ reshape(tf_m, c_m, N, 1, B)
+    target_msa, st_tm = l.linear_target_msa(target_feat, ps.linear_target_msa, st.linear_target_msa)
+    msa_emb, st_msa = l.linear_msa(msa_feat, ps.linear_msa, st.linear_msa)
+    m = msa_emb .+ reshape(target_msa, chn_msa, N, 1, B)
 
     st_out = merge(st, (;
-        linear_tf_z_i=st_tf_i, linear_tf_z_j=st_tf_j,
-        linear_tf_m=st_tf_m, linear_msa_m=st_msa_m,
+        linear_i=st_tpi, linear_j=st_tpj,
+        linear_target_msa=st_tm, linear_msa=st_msa,
         relpos_encoding=st_relpos,
     ))
 

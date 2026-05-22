@@ -5,16 +5,16 @@ rng = Random.Xoshiro(42)
 
 @testset "RelativePositionEncoding" begin
     @testset "Monomer" begin
-        C_Z, RELPOS_K = 16, 8
+        CHN_PAIR, RELPOS_K = 16, 8
         N, B = 6, 2
 
         @testset "Python parity" begin
             for T in [Float64, Float32, Float16]
                 @testset "$T" begin
-                    jl_layer = RelativePositionEncoding(C_Z, RELPOS_K)
+                    jl_layer = RelativePositionEncoding(CHN_PAIR, RELPOS_K)
                     jl_ps, jl_st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                    py_layer = PyInputEmbedder(22, 49, C_Z, 256, RELPOS_K)
+                    py_layer = PyInputEmbedder(22, 49, CHN_PAIR, 256, RELPOS_K)
                     sync_dense!(py_layer.linear_relpos, jl_ps.linear)
 
                     ri = rand(rng, 1:100, N, B)
@@ -36,16 +36,16 @@ rng = Random.Xoshiro(42)
     end
 
     @testset "Multimer" begin
-        C_Z, RELPOS_K, MAX_REL_CHAIN = 16, 8, 2
+        CHN_PAIR, RELPOS_K, MAX_REL_CHAIN = 16, 8, 2
         N, B = 6, 2
 
         @testset "Python parity" begin
             for T in [Float64, Float32, Float16]
                 @testset "$T" begin
-                    jl_layer = RelativePositionEncoding(C_Z, RELPOS_K; is_multimer=true, max_relative_chain=MAX_REL_CHAIN)
+                    jl_layer = RelativePositionEncoding(CHN_PAIR, RELPOS_K; is_multimer=true, max_relative_chain=MAX_REL_CHAIN)
                     jl_ps, jl_st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                    py_layer = PyInputEmbedderMultimer(22, 49, C_Z, 256, RELPOS_K; use_chain_relative=true, max_relative_chain=MAX_REL_CHAIN)
+                    py_layer = PyInputEmbedderMultimer(22, 49, CHN_PAIR, 256, RELPOS_K; use_chain_relative=true, max_relative_chain=MAX_REL_CHAIN)
                     sync_dense!(py_layer.linear_relpos, jl_ps.linear)
 
                     ri = rand(rng, 1:100, N, B)
