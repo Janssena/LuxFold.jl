@@ -1,0 +1,7 @@
+[deps]
+AlphaFold2 = "4dbb17d9-4ae6-4c31-a027-e692e5f6258c"
+BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
+PythonTestHelpers = "265ba9a6-dbd9-4427-b1ce-23dd0d603735"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

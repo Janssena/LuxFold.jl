@@ -1,0 +1,14 @@
+name = "PythonTestHelpers"
+uuid = "265ba9a6-dbd9-4427-b1ce-23dd0d603735"
+version = "0.1.0"
+authors = ["Janssena <alexanderjanssen@live.com>"]
+
+[deps]
+Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
+Pkg = "44cfe95a-1eb2-52ea-b672-e2afdf69b78f"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
+
+[compat]
+Lux = "1.31.4"
+Pkg = "1.12.1"
+PyCall = "1.96.4"

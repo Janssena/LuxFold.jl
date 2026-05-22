@@ -2,3 +2,17 @@ name = "AlphaFold2"
 uuid = "4dbb17d9-4ae6-4c31-a027-e692e5f6258c"
 version = "0.1.0"
 authors = ["Janssena <alexanderjanssen@live.com>"]
+
+[deps]
+Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
+LuxFoldCore = "52160431-febe-4e64-94fd-5e70c5cfc12c"
+LuxTriangleAttention = "3d5d7496-9328-4173-860c-6da38a33fff6"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Static = "aedffcd0-7271-4cad-89d0-dc628f76c6d3"
+
+[compat]
+Lux = "1.31.4"
+LuxFoldCore = "0.1"
+LuxTriangleAttention = "0.3"
+Random = "1.11"
+Static = "1.4.0"
