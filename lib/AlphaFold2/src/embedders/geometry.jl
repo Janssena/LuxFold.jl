@@ -13,60 +13,57 @@ such that for a reference point `r` at (0, 0, 0):
 
 approximately yields the input N, CA, C atoms.
 """
-function make_transform_from_reference(n_xyz, ca_xyz, c_xyz; eps=1e-20)
-    T = eltype(n_xyz)
-
+function make_transform_from_reference(n_xyz::AbstractArray{T}, ca_xyz, c_xyz; eps=T(1e-20)) where T
+    # Convert eps once to T so all arithmetic stays in T (avoids Float64 promotion
+    # when eps is the default Float64 literal and the arrays are Float32/Float16).
+    epsT = T(eps)
     translation = -ca_xyz
     n = n_xyz .+ translation
     c = c_xyz .+ translation
 
-    cx = _vec_get(c, Val(1))
-    cy = _vec_get(c, Val(2))
-    cz = _vec_get(c, Val(3))
+    cx = view(c, 1, :, :)
+    cy = view(c, 2, :, :)
+    cz = view(c, 3, :, :)
 
-    norm_c1 = sqrt.(eps .+ cx .^ 2 .+ cy .^ 2)
-    sin_c1 = -cy ./ norm_c1
-    cos_c1 = cx ./ norm_c1
+    norm_c1 = @. sqrt(epsT + cx^2 + cy^2)
+    sin_c1  = @. -cy / norm_c1
+    cos_c1  = @. cx / norm_c1
 
-    c1_rots = _eye_3x3_batched(T, size(c))
-    for I in CartesianIndices(size(c)[2:end])
-        c1_rots[1, 1, I] = cos_c1[I]
-        c1_rots[1, 2, I] = -sin_c1[I]
-        c1_rots[2, 1, I] = sin_c1[I]
-        c1_rots[2, 2, I] = cos_c1[I]
-    end
+    tails = size(c)[2:end]
+    c1_rots = zeros(T, 3, 3, tails...)
+    selectdim(selectdim(c1_rots, 1, 1), 1, 1) .= cos_c1
+    selectdim(selectdim(c1_rots, 1, 1), 1, 2) .= -sin_c1
+    selectdim(selectdim(c1_rots, 1, 2), 1, 1) .= sin_c1
+    selectdim(selectdim(c1_rots, 1, 2), 1, 2) .= cos_c1
+    selectdim(selectdim(c1_rots, 1, 3), 1, 3) .= one(T)
 
-    norm_c2 = sqrt.(eps .+ cx .^ 2 .+ cy .^ 2 .+ cz .^ 2)
-    sin_c2 = cz ./ norm_c2
-    cos_c2 = sqrt.(cx .^ 2 .+ cy .^ 2) ./ norm_c2
+    norm_c2 = @. sqrt(epsT + cx^2 + cy^2 + cz^2)
+    sin_c2  = @. cz / norm_c2
+    cos_c2  = @. sqrt(cx^2 + cy^2) / norm_c2
 
-    c2_rots = _eye_3x3_batched(T, size(c))
-    for I in CartesianIndices(size(c)[2:end])
-        c2_rots[1, 1, I] = cos_c2[I]
-        c2_rots[1, 3, I] = sin_c2[I]
-        c2_rots[2, 2, I] = 1
-        c2_rots[3, 1, I] = -sin_c2[I]
-        c2_rots[3, 3, I] = cos_c2[I]
-    end
+    c2_rots = zeros(T, 3, 3, tails...)
+    selectdim(selectdim(c2_rots, 1, 1), 1, 1) .= cos_c2
+    selectdim(selectdim(c2_rots, 1, 1), 1, 3) .= sin_c2
+    selectdim(selectdim(c2_rots, 1, 2), 1, 2) .= one(T)
+    selectdim(selectdim(c2_rots, 1, 3), 1, 1) .= -sin_c2
+    selectdim(selectdim(c2_rots, 1, 3), 1, 3) .= cos_c2
 
     c_rots = Lux.batched_matmul(c2_rots, c1_rots)
     n = _batched_matvecmul(c_rots, n)
 
-    ny = _vec_get(n, Val(2))
-    nz = _vec_get(n, Val(3))
+    ny = view(n, 2, :, :)
+    nz = view(n, 3, :, :)
 
-    norm_n = sqrt.(eps .+ ny .^ 2 .+ nz .^ 2)
-    sin_n = -nz ./ norm_n
-    cos_n = ny ./ norm_n
+    norm_n = @. sqrt(epsT + ny^2 + nz^2)
+    sin_n  = @. -nz / norm_n
+    cos_n  = @. ny / norm_n
 
-    n_rots = _eye_3x3_batched(T, size(n))
-    for I in CartesianIndices(size(n)[2:end])
-        n_rots[1, 1, I] = 1
-        n_rots[2, 2, I] = cos_n[I]
-        n_rots[2, 3, I] = -sin_n[I]
-        n_rots[3, 2, I] = sin_n[I]
-        n_rots[3, 3, I] = cos_n[I]
-    end
+    n_rots = zeros(T, 3, 3, tails...)
+    selectdim(selectdim(n_rots, 1, 1), 1, 1) .= one(T)
+    selectdim(selectdim(n_rots, 1, 2), 1, 2) .= cos_n
+    selectdim(selectdim(n_rots, 1, 2), 1, 3) .= -sin_n
+    selectdim(selectdim(n_rots, 1, 3), 1, 2) .= sin_n
+    selectdim(selectdim(n_rots, 1, 3), 1, 3) .= cos_n
 
     rots = Lux.batched_matmul(n_rots, c_rots)
     rots = _batched_transpose(rots)
@@ -76,24 +73,8 @@ end
 
 # --- helpers ---
 
-_vec_get(x, ::Val{1}) = selectdim(x, 1, 1)
-_vec_get(x, ::Val{2}) = selectdim(x, 1, 2)
-_vec_get(x, ::Val{3}) = selectdim(x, 1, 3)
-
-function _eye_3x3_batched(T, sz)
-    tails = Base.tail(sz)
-    x = zeros(T, 3, 3, tails...)
-    for I in CartesianIndices(tails)
-        x[1, 1, I] = 1
-        x[2, 2, I] = 1
-        x[3, 3, I] = 1
-    end
-    return x
-end
-
 function _batched_matvecmul(A, x)
-    ts = size(x)[2:end]
-    xr = reshape(x, 3, 1, ts...)
+    xr = reshape(x, 3, 1, size(x)[2:end]...)
     yr = Lux.batched_matmul(A, xr)
     return dropdims(yr; dims=2)
 end
