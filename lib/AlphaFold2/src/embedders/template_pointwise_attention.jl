@@ -11,14 +11,6 @@ _prep_template_mask(::Nothing, N_templ, B)                    = nothing
 _prep_template_mask(mask::AbstractArray{Bool}, N_templ, B) =
     reshape(mask, N_templ, 1, 1, 1, B)
 
-# Disambiguate LuxTriangleAttention._gate_maybe for the fused-KV + no-gate path.
-# When x=(q,kv) Tuple is unpacked inside Attention, the output `attn` is an AbstractArray
-# but `g` retains the original Tuple type. NoOpLayer (use_gate=false) must win over the
-# generic Tuple overload; without this method Julia sees an ambiguity.
-# TODO: remove once LuxTriangleAttention adds this overload upstream.
-import LuxTriangleAttention: _gate_maybe
-_gate_maybe(::Lux.NoOpLayer, x::AbstractArray, ::Tuple, ps, st) = x, st
-
 # =============================================================================
 
 """
