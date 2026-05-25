@@ -49,6 +49,13 @@ function InputEmbedder(
     )
 end
 
+(l::InputEmbedder)(inputs::NamedTuple, ps, st) = l(
+    inputs.target_feat,
+    inputs.residue_index,
+    inputs.msa_feat,
+    ps, st
+)
+
 function (l::InputEmbedder)(target_feat, residue_index, msa_feat, ps, st)
     chn_pair, chn_msa = l.linear_i.out_dims, l.linear_target_msa.out_dims
     N, B = size(residue_index)
@@ -57,7 +64,9 @@ function (l::InputEmbedder)(target_feat, residue_index, msa_feat, ps, st)
 
     target_pair_i, st_tpi = l.linear_i(target_feat, ps.linear_i, st.linear_i)
     target_pair_j, st_tpj = l.linear_j(target_feat, ps.linear_j, st.linear_j)
-    z = z_relpos .+ reshape(target_pair_i, chn_pair, N, 1, B) .+ reshape(target_pair_j, chn_pair, 1, N, B)
+    target_pair_i = reshape(target_pair_i, chn_pair, N, 1, B)
+    target_pair_j = reshape(target_pair_j, chn_pair, 1, N, B)
+    z = @. z_relpos + target_pair_i + target_pair_j # Can we do this in-place on z_relpos with gradients?
 
     target_msa, st_tm = l.linear_target_msa(target_feat, ps.linear_target_msa, st.linear_target_msa)
     msa_emb, st_msa = l.linear_msa(msa_feat, ps.linear_msa, st.linear_msa)
@@ -69,5 +78,5 @@ function (l::InputEmbedder)(target_feat, residue_index, msa_feat, ps, st)
         relpos_encoding=st_relpos,
     ))
 
-    return (m, z), st_out
+    return (msa = m, pair = z), st_out
 end
