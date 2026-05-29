@@ -37,7 +37,7 @@ end
 # prep_bias: [H, Na, Nb, N_templ, B] + 5D x_norm → [Na, Nb, H, 1, N_templ, B]
 # Mirrors the 4D overload: [H,Nq,Nk,B] → [Nq,Nk,H,1,B].
 function LuxTriangleAttention.prep_bias(
-    bias::AbstractArray{T,5}, ::AbstractArray{<:Any,5}, ::StaticSymbol{:qk}
+    bias::AbstractArray{T,5}, ::AbstractArray{T,5}, ::StaticSymbol{:qk}
 ) where T
     H, Na, Nb, N_templ, B = size(bias)
     return reshape(permutedims(bias, (2, 3, 1, 4, 5)), Na, Nb, H, 1, N_templ, B)
@@ -45,18 +45,18 @@ end
 
 # _batched_matmul: 5D overloads for TriMulCore with [C, Ni, Nj, N_templ, B] tensors.
 # Batch over dims (1=C, 4=N_templ, 5=B); contract over dim 3 (Nj) or dim 2 (Ni).
-LuxTriangleAttention._batched_matmul(::True, a::AbstractArray{<:Any,5}, b::AbstractArray{<:Any,5}) =
+LuxTriangleAttention._batched_matmul(::True, a::AbstractArray{T,5}, b::AbstractArray{T,5}) where T<:Real =
     Lux.batched_matmul(a, b;
         lhs_contracting_dim=3, rhs_contracting_dim=3,
         lhs_batching_dims=(1, 4, 5), rhs_batching_dims=(1, 4, 5))
 
-LuxTriangleAttention._batched_matmul(::False, a::AbstractArray{<:Any,5}, b::AbstractArray{<:Any,5}) =
+LuxTriangleAttention._batched_matmul(::False, a::AbstractArray{T,5}, b::AbstractArray{T,5}) where T<:Real =
     Lux.batched_matmul(a, b;
         lhs_contracting_dim=2, rhs_contracting_dim=2,
         lhs_batching_dims=(1, 4, 5), rhs_batching_dims=(1, 4, 5))
 
 # _permute_mult_out: 5D output [Ni, Nj, H, N_templ, B] → [H, Ni, Nj, N_templ, B]
-LuxTriangleAttention._permute_mult_out(y::AbstractArray{<:Any,5}) =
+LuxTriangleAttention._permute_mult_out(y::AbstractArray{T,5}) where T =
     permutedims(y, (3, 1, 2, 4, 5))
 
 # =============================================================================
@@ -64,9 +64,12 @@ LuxTriangleAttention._permute_mult_out(y::AbstractArray{<:Any,5}) =
 """
     TemplatePairStackBlock(chn_templ, chn_hidden_tri_att, chn_hidden_tri_mul, no_heads, pair_transition_n; ...)
 
-A single block of the template pair stack (Algorithm 16).
-Applies triangular attention (starting/ending), triangular multiplication (outgoing/incoming),
-and a pair transition. Operates natively on 5D tensors — all templates in parallel, no loop.
+Factory function that constructs a `PairStack` configured for rank-5 template tensors
+(Algorithm 16). Operates natively on 5D tensors `[chn_templ, N_res, N_res, N_templ, B]`
+— all templates are processed in parallel.
+
+Default operation order is `tri_mul_first=false` (attention-first), matching the
+original AlphaFold2 template pair stack.
 
 # Arguments
 - `chn_templ`: Template pair embedding channel dimension
@@ -85,25 +88,9 @@ and a pair transition. Operates natively on 5D tensors — all templates in para
 - `mask`: Pair mask `[N_res, N_res, N_templ, B]` (Bool)
 
 # Returns
-- `z`: Updated tensor (same shape as input)
+- Updated `(; z, mask)` NamedTuple (mask unchanged)
 - `st`: Updated state
 """
-struct TemplatePairStackBlock{TRI_MUL_FIRST, TAS, TAE, TMO, TMI, PT} <: Lux.AbstractLuxContainerLayer{(:tri_att_start, :tri_att_end, :tri_mul_out, :tri_mul_in, :pair_transition)}
-    tri_mul_first::TRI_MUL_FIRST   # StaticBool — FIRST so TemplatePairStackBlock{True} dispatches cleanly
-    tri_att_start::TAS
-    tri_att_end::TAE
-    tri_mul_out::TMO
-    tri_mul_in::TMI
-    pair_transition::PT
-end
-
-# Map a top-level Bool use_bias to the openfold-compatible per-sublayer settings for
-# TriangleAttention. Openfold sets bias=False on the triangle-bias linear projection
-# and on QKV, but True on the gate and output projections.
-_tri_att_use_bias(b::Bool) =
-    b ? (layer_norm=true, linear=false, mha=(qkv=false, gate=true, out=true)) : false
-_tri_att_use_bias(b) = b   # NamedTuple overrides → pass through
-
 function TemplatePairStackBlock(
     chn_templ::Int, chn_hidden_tri_att::Int, chn_hidden_tri_mul::Int,
     no_heads::Int, pair_transition_n::Int;
@@ -111,81 +98,10 @@ function TemplatePairStackBlock(
     use_bias=true,
     epsilon=1f-5
 )
-    use_bias = resolve_defaults(
-        use_bias, (:tri_att_start, :tri_att_end, :tri_mul_out, :tri_mul_in, :pair_transition)
+    return PairStackBlock(
+        chn_templ, chn_hidden_tri_mul, chn_hidden_tri_att, no_heads, pair_transition_n;
+        tri_mul_first, rank=5, use_bias, epsilon
     )
-    tri_att_start = TriangleAttention(
-        chn_templ, chn_hidden_tri_att, no_heads;
-        is_starting=static(true), rank=5,
-        use_bias=_tri_att_use_bias(use_bias.tri_att_start), layernorm_eps=epsilon
-    )
-    tri_att_end = TriangleAttention(
-        chn_templ, chn_hidden_tri_att, no_heads;
-        is_starting=static(false), rank=5,
-        use_bias=_tri_att_use_bias(use_bias.tri_att_end), layernorm_eps=epsilon
-    )
-    tri_mul_out = TriangleMultiplication(
-        chn_templ, chn_hidden_tri_mul;
-        is_outgoing=static(true), rank=5, use_bias=use_bias.tri_mul_out, layernorm_eps=epsilon
-    )
-    tri_mul_in = TriangleMultiplication(
-        chn_templ, chn_hidden_tri_mul;
-        is_outgoing=static(false), rank=5, use_bias=use_bias.tri_mul_in, layernorm_eps=epsilon
-    )
-    pair_transition = Transition(
-        chn_templ; n=pair_transition_n, rank=5, use_bias=use_bias.pair_transition
-    )
-    return TemplatePairStackBlock(
-        static(tri_mul_first),
-        tri_att_start, tri_att_end, tri_mul_out, tri_mul_in, pair_transition
-    )
-end
-
-# NamedTuple dispatch — lets Lux.Chain thread (; z, mask) through the stack.
-# The mask is passed through unchanged; only z is updated.
-(l::TemplatePairStackBlock)(inputs::NamedTuple, ps, st) = l(
-    inputs.z, 
-    get(inputs, :mask, nothing), 
-    ps, st
-)
-
-# tri_mul_first = False: attention → multiplication (default AlphaFold2 order)
-function (l::TemplatePairStackBlock{False})(z, mask, ps, st)
-    u, tri_att_start = l.tri_att_start(z, mask, ps.tri_att_start, st.tri_att_start)
-    z = z .+ u
-    u, tri_att_end = l.tri_att_end(z, mask, ps.tri_att_end, st.tri_att_end)
-    z = z .+ u
-    u, tri_mul_out = l.tri_mul_out(z, mask, ps.tri_mul_out, st.tri_mul_out)
-    z = z .+ u
-    u, tri_mul_in = l.tri_mul_in(z, mask, ps.tri_mul_in, st.tri_mul_in)
-    z = z .+ u
-    u, pair_transition = l.pair_transition(z, mask, ps.pair_transition, st.pair_transition)
-    z = z .+ u
-
-    st_new = merge(st, (;
-        tri_att_start, tri_att_end, tri_mul_out, tri_mul_in, pair_transition
-    ))
-    return (; z, mask, ), st_new
-end
-
-# tri_mul_first = True: multiplication → attention
-function (l::TemplatePairStackBlock{True})(z, mask, ps, st)
-    u, tri_mul_out = l.tri_mul_out(z, mask, ps.tri_mul_out, st.tri_mul_out)
-    z = z .+ u
-    u, tri_mul_in = l.tri_mul_in(z, mask, ps.tri_mul_in, st.tri_mul_in)
-    z = z .+ u
-    u, tri_att_start = l.tri_att_start(z, mask, ps.tri_att_start, st.tri_att_start)
-    z = z .+ u
-    u, tri_att_end = l.tri_att_end(z, mask, ps.tri_att_end, st.tri_att_end)
-    z = z .+ u
-    u, pair_transition  = l.pair_transition(z, mask, ps.pair_transition, st.pair_transition)
-    z = z .+ u
-
-    st_new = merge(st, (;
-        tri_att_start, tri_att_end, tri_mul_out, tri_mul_in, pair_transition
-    ))
-
-    return (; z, mask, ), st_new
 end
 
 # =============================================================================
@@ -261,6 +177,6 @@ function (l::TemplatePairStack)(inputs::NamedTuple, ps, st)
         (z = inputs.z, mask = get(inputs, :mask, nothing)), 
         ps.blocks, st.blocks
     )
-    z, st_ln = l.layer_norm(outputs.z, ps.layer_norm, st.layer_norm)
-    return z, merge(st, (; blocks=st_blocks, layer_norm=st_ln))
+    z_update, st_ln = l.layer_norm(outputs.z, ps.layer_norm, st.layer_norm)
+    return z_update, merge(st, (; blocks=st_blocks, layer_norm=st_ln))
 end

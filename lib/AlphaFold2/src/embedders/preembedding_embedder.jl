@@ -1,14 +1,14 @@
 """
-    PreEmbeddingEmbedder(tf_dim, preembedding_dim, c_z, c_m, relpos_k; use_bias=true)
+    PreEmbeddingEmbedder(feat_dim, preemb_dim, chn_z, chn_msa, relpos_k; use_bias=true)
 
 Embeds precomputed per-residue features (e.g. ESM-2) alongside target features, producing a
 single-row MSA embedding and a pair embedding.
 
 # Arguments
-- `tf_dim`: Channel dimension of the target feature (aatype one-hot)
-- `preembedding_dim`: Channel dimension of the pre-embedding (e.g. ESM-2 representation)
-- `c_z`: Channel dimension of the pair embedding
-- `c_m`: Channel dimension of the MSA embedding
+- `feat_dim`: Channel dimension of the target feature (aatype one-hot)
+- `preemb_dim`: Channel dimension of the pre-embedding (e.g. ESM-2 representation)
+- `chn_z`: Channel dimension of the pair embedding
+- `chn_msa`: Channel dimension of the MSA embedding
 - `relpos_k`: Half-window for relative positional encoding
 
 # Inputs
@@ -29,32 +29,46 @@ struct PreEmbeddingEmbedder{L1,L2,L3,L4,R} <: Lux.AbstractLuxContainerLayer{(:li
     relpos::R
 end
 
-function PreEmbeddingEmbedder(tf_dim::Int, preembedding_dim::Int, c_z::Int, c_m::Int, relpos_k::Int; use_bias=true)
+function PreEmbeddingEmbedder(feat_dim::Int, preemb_dim::Int, chn_z::Int, chn_msa::Int, relpos_k::Int; use_bias=true)
+    use_bias = resolve_defaults(use_bias, (:linear_target_msa, :linear_preembedding_msa, :linear_preembedding_pair_i, :linear_preembedding_pair_j, :relpos))
     return PreEmbeddingEmbedder(
-        Lux.Dense(tf_dim => c_m; use_bias),
-        Lux.Dense(preembedding_dim => c_m; use_bias),
-        Lux.Dense(preembedding_dim => c_z; use_bias),
-        Lux.Dense(preembedding_dim => c_z; use_bias),
-        RelativePositionEncoding(c_z, relpos_k; use_bias),
+        Lux.Dense(feat_dim => chn_msa; use_bias=use_bias.linear_target_msa),
+        Lux.Dense(preemb_dim => chn_msa; use_bias=use_bias.linear_preembedding_msa),
+        Lux.Dense(preemb_dim => chn_z; use_bias=use_bias.linear_preembedding_pair_i),
+        Lux.Dense(preemb_dim => chn_z; use_bias=use_bias.linear_preembedding_pair_j),
+        RelativePositionEncoding(chn_z, relpos_k; use_bias=use_bias.relpos),
     )
 end
 
+(l::PreEmbeddingEmbedder)(inputs::NamedTuple, ps, st) = l(
+    inputs.target_feat, 
+    inputs.residue_index, 
+    inputs.preembedding, 
+    ps, st
+)
+
 function (l::PreEmbeddingEmbedder)(target_feat, residue_index, preembedding, ps, st)
-    tf_m, st_tfm = l.linear_target_msa(target_feat, ps.linear_target_msa, st.linear_target_msa)
+    feat_m, st_tfm = l.linear_target_msa(target_feat, ps.linear_target_msa, st.linear_target_msa)
     preemb_m, st_pm = l.linear_preembedding_msa(preembedding, ps.linear_preembedding_msa, st.linear_preembedding_msa)
-    m_update = reshape(tf_m, size(tf_m, 1), 1, size(tf_m, 2), size(tf_m, 3)) .+
-               reshape(preemb_m, size(preemb_m, 1), 1, size(preemb_m, 2), size(preemb_m, 3))
+    
+    m_update = feat_m .+ preemb_m
+    chn_msa, N, B = size(m_update)
+    m_update = reshape(m_update, chn_msa, 1, N, B)
 
     z_rpe, st_rpe = l.relpos(residue_index, ps.relpos, st.relpos)
     preemb_i, st_pi = l.linear_preembedding_pair_i(preembedding, ps.linear_preembedding_pair_i, st.linear_preembedding_pair_i)
     preemb_j, st_pj = l.linear_preembedding_pair_j(preembedding, ps.linear_preembedding_pair_j, st.linear_preembedding_pair_j)
-    z_update = z_rpe .+ reshape(preemb_i, size(preemb_i, 1), size(preemb_i, 2), 1, size(preemb_i, 3)) .+
-               reshape(preemb_j, size(preemb_j, 1), 1, size(preemb_j, 2), size(preemb_j, 3))
+    
+    preemb_dim = size(preemb_i, 1)
+    preemb_i_re = reshape(preemb_i, preemb_dim, N, 1, B)
+    preemb_j_re = reshape(preemb_j, preemb_dim, 1, N, B)
+
+    z_update = @. z_rpe + preemb_i_re + preemb_j_re
 
     st_out = merge(st, (;
         linear_target_msa=st_tfm, linear_preembedding_msa=st_pm,
         linear_preembedding_pair_i=st_pi, linear_preembedding_pair_j=st_pj,
         relpos=st_rpe,
     ))
-    return (m_update, z_update), st_out
+    return (m = m_update, z = z_update), st_out
 end

@@ -44,7 +44,7 @@ function _fill_dgram!(out::AbstractArray{T}, pos::AbstractArray{T};
         T(-1), T(no_bins - 1)))              # [1, N, N, extra...]
 
     # class_idx needs [no_bins, 1, 1, (1 per extra dim)] to broadcast with bin_idx.
-    class_idx = reshape(Int32.(0:no_bins-1), no_bins, ntuple(_ -> 1, 2 + length(extra))...)
+    class_idx = reshape(Int32.(0:no_bins-1), no_bins, ntuple(one, 2 + length(extra))...)
     # Broadcast-assignment: writes directly into out, no intermediate allocation.
     @. out = T(bin_idx == class_idx)
 end

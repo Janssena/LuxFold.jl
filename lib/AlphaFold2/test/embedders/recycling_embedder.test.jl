@@ -1,29 +1,29 @@
 const PyRecyclingEmbedder = pyimport("openfold.model.embedders").RecyclingEmbedder
-const C_M, C_Z, NO_BINS = 16, 16, 15
 
 rng = Random.Xoshiro(42)
 
 @testset "RecyclingEmbedder" begin
+    chn_msa, chn_z, no_bins = 16, 16, 15
     @testset "Python parity" begin
         N, B = 8, 2
         min_bin, max_bin = 3.25f0, 20.75f0
 
         for T in [Float64, Float32, Float16]
             @testset "$T" begin
-                jl_layer = RecyclingEmbedder(C_M, C_Z; min_bin, max_bin, no_bins=NO_BINS)
+                jl_layer = RecyclingEmbedder(chn_msa, chn_z; min_bin, max_bin, no_bins=no_bins)
                 jl_ps, jl_st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                py_layer = PyRecyclingEmbedder(C_M, C_Z, min_bin, max_bin, NO_BINS, T(1e8))
+                py_layer = PyRecyclingEmbedder(chn_msa, chn_z, min_bin, max_bin, no_bins, T(1e8))
 
                 sync_layernorm!(py_layer.layer_norm_m, jl_ps.layer_norm_m)
                 sync_layernorm!(py_layer.layer_norm_z, jl_ps.layer_norm_z)
                 sync_dense!(py_layer.linear, jl_ps.linear)
 
-                m_jl = randn(rng, T, C_M, N, B)
-                z_jl = randn(rng, T, C_Z, N, N, B)
+                m_jl = randn(rng, T, chn_msa, N, B)
+                z_jl = randn(rng, T, chn_z, N, N, B)
                 x_jl = randn(rng, T, 3, N, B) .* T(5)
 
-                (m_jl_out, z_jl_out), _ = jl_layer(m_jl, z_jl, x_jl, jl_ps, jl_st)
+                (m_jl_out, z_jl_out), _ = jl_layer(x_jl, m_jl, z_jl, jl_ps, jl_st)
 
                 m_py = to_py(m_jl; swap_batch_dim=true)
                 z_py = to_py(z_jl; swap_batch_dim=true)
@@ -40,7 +40,7 @@ rng = Random.Xoshiro(42)
                 end
 
                 @testset "Type-stability" begin
-                    @test_nowarn @inferred jl_layer(m_jl, z_jl, x_jl, jl_ps, jl_st)
+                    @test_nowarn @inferred jl_layer(x_jl, m_jl, z_jl, jl_ps, jl_st)
                 end
             end
         end

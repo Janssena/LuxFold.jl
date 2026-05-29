@@ -7,7 +7,7 @@
 #
 # ::Nothing dispatches to nothing → Lux.scaled_dot_product_attention skips masking.
 
-_prep_template_mask(::Nothing, N_templ, B)                    = nothing
+_prep_template_mask(::Nothing, N_templ, B) = nothing
 _prep_template_mask(mask::AbstractArray{Bool}, N_templ, B) =
     reshape(mask, N_templ, 1, 1, 1, B)
 

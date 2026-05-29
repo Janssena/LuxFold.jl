@@ -50,6 +50,19 @@ function RelativePositionEncoding(chn_pair::Int, relpos_k::Int=32; is_multimer=f
     )
 end
 
+(l::RelativePositionEncoding{False})(inputs::NamedTuple, ps, st) = l(
+    inputs.residue_index, 
+    ps, st
+)
+
+(l::RelativePositionEncoding{True})(inputs::NamedTuple, ps, st) = l(
+    inputs.residue_index, 
+    inputs.asym_id,
+    inputs.entity_id, 
+    inputs.sym_id,
+    ps, st
+)
+
 function (l::RelativePositionEncoding{False})(residue_index, ps, st)
     N, B = size(residue_index)
     T = eltype(ps.linear.weight)
@@ -57,10 +70,14 @@ function (l::RelativePositionEncoding{False})(residue_index, ps, st)
     pairwise_diff = T.(reshape(residue_index, N, 1, B) .- reshape(residue_index, 1, N, B))
     clamped_offset = Int.(clamp.(pairwise_diff, -l.relpos_k, l.relpos_k)) .+ (l.relpos_k + 1)
 
-    one_hot = zeros(T, 2 * l.relpos_k + 1, N, N, B)
-    for i in CartesianIndices(clamped_offset)
-        one_hot[clamped_offset[i], i] = one(T)
-    end
+    # Vectorized one-hot encoding: reshape → broadcast → reshape
+    # Avoids CartesianIndices loop which serializes on GPU
+    offset_flat = reshape(clamped_offset, :)
+    n_total = length(offset_flat)
+    class_idx = reshape(1:(2*l.relpos_k+1), 2*l.relpos_k+1, 1)
+    pos_idx = reshape(offset_flat, 1, n_total)
+    one_hot_flat = @. T(class_idx == pos_idx)
+    one_hot = reshape(one_hot_flat, 2*l.relpos_k+1, N, N, B)
 
     y, st_linear = l.linear(one_hot, ps.linear, st.linear)
     return y, merge(st, (; linear=st_linear))
@@ -74,27 +91,33 @@ function (l::RelativePositionEncoding{True})(residue_index, asym_id, entity_id, 
     n_bins_sym_id = 2 * l.max_relative_chain + 2
 
     pairwise_diff = T.(reshape(residue_index, N, 1, B) .- reshape(residue_index, 1, N, B))
-    clamped_offset = clamp.(pairwise_diff, -l.relpos_k, l.relpos_k) .+ l.relpos_k
+    clamped_offset = @. clamp(pairwise_diff, -l.relpos_k, l.relpos_k) + l.relpos_k
     same_chain = reshape(asym_id, N, 1, B) .== reshape(asym_id, 1, N, B)
-    offset_bin = Int.(round.(ifelse.(same_chain, clamped_offset, T(2 * l.relpos_k + 1)))) .+ 1
+    offset_bin = @. Int(round(ifelse(same_chain, clamped_offset, T(2 * l.relpos_k + 1)))) + 1
 
-    oh_offset = zeros(T, n_bins_offset, N, N, B)
-    for i in CartesianIndices(offset_bin)
-        oh_offset[offset_bin[i], i] = one(T)
-    end
+    # Vectorized one-hot encoding for offset_bin: reshape → broadcast → reshape
+    offset_bin_flat = reshape(offset_bin, :)
+    n_total = length(offset_bin_flat)
+    class_idx_offset = reshape(1:n_bins_offset, n_bins_offset, 1)
+    pos_idx_offset = reshape(offset_bin_flat, 1, n_total)
+    oh_offset_flat = @. T(class_idx_offset == pos_idx_offset)
+    oh_offset = reshape(oh_offset_flat, n_bins_offset, N, N, B)
 
     same_entity = T.(reshape(entity_id, N, 1, B) .== reshape(entity_id, 1, N, B))
     same_entity = reshape(same_entity, 1, N, N, B)
 
     sym_id_diff = T.(reshape(sym_id, N, 1, B) .- reshape(sym_id, 1, N, B))
-    clamped_sym_id = clamp.(sym_id_diff, -l.max_relative_chain, l.max_relative_chain) .+ l.max_relative_chain
+    clamped_sym_id = @. clamp(sym_id_diff, -l.max_relative_chain, l.max_relative_chain) + l.max_relative_chain
     same_entity_bool = reshape(entity_id, N, 1, B) .== reshape(entity_id, 1, N, B)
-    sym_id_bin = Int.(round.(ifelse.(same_entity_bool, clamped_sym_id, T(2 * l.max_relative_chain + 1)))) .+ 1
+    sym_id_bin = @. Int(round(ifelse(same_entity_bool, clamped_sym_id, T(2 * l.max_relative_chain + 1)))) + 1
 
-    oh_sym_id = zeros(T, n_bins_sym_id, N, N, B)
-    for i in CartesianIndices(sym_id_bin)
-        oh_sym_id[sym_id_bin[i], i] = one(T)
-    end
+    # Vectorized one-hot encoding for sym_id_bin: reshape → broadcast → reshape
+    sym_id_bin_flat = reshape(sym_id_bin, :)
+    n_total_sym = length(sym_id_bin_flat)
+    class_idx_sym = reshape(1:n_bins_sym_id, n_bins_sym_id, 1)
+    pos_idx_sym = reshape(sym_id_bin_flat, 1, n_total_sym)
+    oh_sym_id_flat = @. T(class_idx_sym == pos_idx_sym)
+    oh_sym_id = reshape(oh_sym_id_flat, n_bins_sym_id, N, N, B)
 
     relpos_features = vcat(oh_offset, same_entity, oh_sym_id)
 

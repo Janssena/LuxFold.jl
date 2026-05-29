@@ -1,18 +1,22 @@
 const PyPreEmbeddingEmbedder = pyimport("openfold.model.embedders").PreembeddingEmbedder
-const TF_DIM, PREEMB_DIM, C_Z, C_M, RELPOS_K = 22, 128, 128, 256, 32
 
 rng = Random.Xoshiro(42)
 
 @testset "PreEmbeddingEmbedder" begin
+    feat_dim = 22
+    preemb_dim = 128
+    chn_z = 128
+    chn_msa = 256
+    relpos_k = 32
     @testset "Python parity" begin
         N, B = 8, 2
 
         for T in [Float64, Float32, Float16]
             @testset "$T" begin
-                jl_layer = PreEmbeddingEmbedder(TF_DIM, PREEMB_DIM, C_Z, C_M, RELPOS_K)
+                jl_layer = PreEmbeddingEmbedder(feat_dim, preemb_dim, chn_z, chn_msa, relpos_k)
                 jl_ps, jl_st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                py_layer = PyPreEmbeddingEmbedder(TF_DIM, PREEMB_DIM, C_Z, C_M, RELPOS_K)
+                py_layer = PyPreEmbeddingEmbedder(feat_dim, preemb_dim, chn_z, chn_msa, relpos_k)
 
                 sync_dense!(py_layer.linear_tf_m, jl_ps.linear_target_msa)
                 sync_dense!(py_layer.linear_preemb_m, jl_ps.linear_preembedding_msa)
@@ -20,9 +24,9 @@ rng = Random.Xoshiro(42)
                 sync_dense!(py_layer.linear_preemb_z_j, jl_ps.linear_preembedding_pair_j)
                 sync_dense!(py_layer.linear_relpos, jl_ps.relpos.linear)
 
-                target_feat = randn(rng, T, TF_DIM, N, B)
+                target_feat = randn(rng, T, feat_dim, N, B)
                 residue_index = rand(rng, 1:100, N, B)
-                preembedding = randn(rng, T, PREEMB_DIM, N, B)
+                preembedding = randn(rng, T, preemb_dim, N, B)
 
                 (m_jl, z_jl), _ = jl_layer(target_feat, residue_index, preembedding, jl_ps, jl_st)
 
