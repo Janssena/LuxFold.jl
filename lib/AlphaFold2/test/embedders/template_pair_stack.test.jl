@@ -1,8 +1,6 @@
 const PyTemplatePairStackBlock = pyimport("openfold.model.template").TemplatePairStackBlock
 const PyTemplatePairStack = pyimport("openfold.model.template").TemplatePairStack
 
-# ===  Sync helpers for openfold (TemplatePairStackBlock tests)  ===
-
 function sync_template_pair_stack_block!(py_block::PyObject, jl_ps::NamedTuple)
     sync_triangle_attention!(py_block.tri_att_start, jl_ps.tri_att_start)
     sync_triangle_attention!(py_block.tri_att_end,   jl_ps.tri_att_end)
@@ -21,17 +19,7 @@ function sync_template_pair_stack!(py_stack::PyObject, jl_ps::NamedTuple)
     sync_layernorm!(py_stack.layer_norm, jl_ps.layer_norm)
 end
 
-# ===  Dimension conventions  ===
-#
-# Julia: [C, Ni, Nj, N_templ, B]   ←→   Python: [B, N_templ, Ni, Nj, C]
-# Julia mask: [Ni, Nj, N_templ, B] ←→   Python mask: [B, N_templ, Ni, Nj]
-#
-# Permutation to restore Julia layout from Python output:
-#   permutedims(y_py, (5, 3, 4, 2, 1))   [B,T,Ni,Nj,C] → [C,Ni,Nj,T,B]
-
-rng = Random.Xoshiro(42)
-
-# mask with diagonal forced True (avoids NaN in attention softmax from fully-masked rows)
+# Note: mask with diagonal forced True (avoids NaN in attention softmax from fully-masked rows)
 function make_mask(rng, N_res, N_templ, B)
     mask = rand(rng, Bool, N_res, N_res, N_templ, B)
     for b in 1:B, t in 1:N_templ, i in 1:N_res
@@ -41,12 +29,14 @@ function make_mask(rng, N_res, N_templ, B)
 end
 
 @testset "TemplatePairStackBlock" begin
-    C_t = 16
-    C_hidden_tri_att = 4
-    C_hidden_tri_mul = 16
+    rng = Random.Xoshiro(42)
+    chn_templ = 16
+    chn_hidden_tri_att = 4
+    chn_hidden_tri_mul = 16
     no_heads = 4
     pair_transition_n = 2
     N_res, N_templ, B = 12, 6, 2
+
     for tri_mul_first in [false, true]
         @testset "tri_mul_first=$tri_mul_first" begin
             for T in [Float64, Float32, Float16]
@@ -58,15 +48,15 @@ end
                     for (name, mask) in mask_cfg
                         @testset "$name" begin
                             jl_layer = TemplatePairStackBlock(
-                                C_t, C_hidden_tri_att, C_hidden_tri_mul, no_heads, pair_transition_n;
+                                chn_templ, chn_hidden_tri_att, chn_hidden_tri_mul, no_heads, pair_transition_n;
                                 tri_mul_first, epsilon=1f-5
                             )
                             ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
                             py_layer = PyTemplatePairStackBlock(
-                                c_t=C_t,
-                                c_hidden_tri_att=C_hidden_tri_att,
-                                c_hidden_tri_mul=C_hidden_tri_mul,
+                                c_t=chn_templ,
+                                c_hidden_tri_att=chn_hidden_tri_att,
+                                c_hidden_tri_mul=chn_hidden_tri_mul,
                                 no_blocks=1,
                                 no_heads=no_heads,
                                 pair_transition_n=pair_transition_n,
@@ -77,7 +67,7 @@ end
                             )
                             sync_template_pair_stack_block!(py_layer, ps)
 
-                            z = randn(rng, T, C_t, N_res, N_res, N_templ, B)
+                            z = randn(rng, T, chn_templ, N_res, N_res, N_templ, B)
                             z_init = copy(z)
                             mask_init = isnothing(mask) ? nothing : copy(mask)
 
@@ -119,13 +109,11 @@ end
 
 
 @testset "TemplatePairStack" begin
-    # Reference: MinTemplatePairStack from minAlphaFold2.
-    # Runs each block's sub-layers on a flat (B*T, N, N, C) tensor — the same
-    # computation as Julia's 5D TemplatePairStack but in a Python-native layout.
-    # Weights are synced from Julia via sync_min_template_pair_stack!.
-    C_t = 16
-    C_hidden_tri_att = 4
-    C_hidden_tri_mul = 16
+    rng = Random.Xoshiro(42)
+
+    chn_templ = 16
+    chn_hidden_tri_att = 4
+    chn_hidden_tri_mul = 16
     pair_transition_n = 2
     no_heads = 8
     N_res, N_templ, B = 6, 3, 2
@@ -142,16 +130,16 @@ end
                     for (name, mask) in mask_cfg
                         @testset "$name" begin
                             jl_layer = TemplatePairStack(
-                                C_t, C_hidden_tri_att, C_hidden_tri_mul,
+                                chn_templ, chn_hidden_tri_att, chn_hidden_tri_mul,
                                 no_blocks, no_heads, pair_transition_n;  # no_blocks = 1
                                 tri_mul_first=false, epsilon=1f-5
                             )
                             ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
                             py_layer = PyTemplatePairStack(
-                                c_t=C_t,
-                                c_hidden_tri_att=C_hidden_tri_att,
-                                c_hidden_tri_mul=C_hidden_tri_mul,
+                                c_t=chn_templ,
+                                c_hidden_tri_att=chn_hidden_tri_att,
+                                c_hidden_tri_mul=chn_hidden_tri_mul,
                                 no_blocks=no_blocks,
                                 no_heads=no_heads,
                                 pair_transition_n=pair_transition_n,
@@ -164,7 +152,7 @@ end
 
                             sync_template_pair_stack!(py_layer, ps)
 
-                            template = randn(rng, T, C_t, N_res, N_res, N_templ, B)
+                            template = randn(rng, T, chn_templ, N_res, N_res, N_templ, B)
 
                             # Python expects [B, N_templ, Ni, Nj, C] and mask [B, N_templ, Ni, Nj]
                             template_py = to_py(permutedims(template, (5, 4, 2, 3, 1)); swap_batch_dim=false)

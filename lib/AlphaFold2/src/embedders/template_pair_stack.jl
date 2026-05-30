@@ -1,63 +1,20 @@
-# ===  LuxTriangleAttention overloads for 5D template tensors  ===
+# =============================================================================
+# TemplatePairStackBlock and TemplatePairStack
+# =============================================================================
 #
-# LuxTriangleAttention's existing overloads handle 4D features [C,N,N,B] and 3D Bool masks
-# [N,N,B]. Template processing adds a N_templ dimension, requiring:
+# Template tensors are 5D: [C, N, N, N_templ, B].
 #
-#   1. ending_permute for 5D <:Real  — overrides the existing (unused) LuxTriangleAttention
-#      method that swaps dims 3,4.  Here we swap dims 2,3 for [C,Ni,Nj,N_templ,B].
-#   2. ending_permute for 4D Bool    — new overload, no conflict (LuxTriangleAttention only
-#      has Bool,3).
-#   3. prep_mask for 4D Bool         — new overload; reshapes to 6D for logit broadcasting.
-#   4. prep_bias for 5D bias + 5D x  — new overload; permutes/reshapes for logit broadcasting.
-#   5. _batched_matmul for 5D a, b   — TriMulCore batched matmul; batch over (1,4,5), contract
-#      over dim 3 (outgoing) or dim 2 (incoming).
-#   6. _permute_mult_out for 5D y    — [Ni,Nj,H,N_templ,B] → [H,Ni,Nj,N_templ,B].
+# TemplatePairStackBlock is a PairStackBlock(rank=4) — all sub-layers are configured
+# for 4D input. The 5D dispatch on PairStackBlock{True/False, StaticInt{4}} (defined
+# in pair_stack_block.jl) handles standalone calls with 5D input by merging N_templ*B.
 #
-# Dispatch convention inherited from LuxTriangleAttention:
-#   <:Real → feature tensor,  Bool → mask
+# TemplatePairStack does the N_templ*B merge ONCE at the stack level before the Chain,
+# so blocks receive plain 4D tensors throughout. After the chain the 5D shape is
+# restored before the final LayerNorm (whose parameters match the 5D layout).
 #
-# See openspec/TEMPLATE_EMBEDDERS.md for full derivation of all shapes.
-
-import LuxTriangleAttention: ending_permute, prep_mask, prep_bias, _batched_matmul, _permute_mult_out
-
-# Override unused 5D <:Real method: [C, Ni, Nj, N_templ, B] → swap dims 2,3
-LuxTriangleAttention.ending_permute(x::AbstractArray{<:Real,5}) =
-    permutedims(x, (1, 3, 2, 4, 5))
-
-# New Bool,4 method: [Ni, Nj, N_templ, B] → swap dims 1,2
-LuxTriangleAttention.ending_permute(mask::AbstractArray{Bool,4}) =
-    permutedims(mask, (2, 1, 3, 4))
-
-# prep_mask: 4D Bool (possibly permuted) → 6D for logits [Na, Na, H, Nb, N_templ, B]
-function LuxTriangleAttention.prep_mask(mask::AbstractArray{Bool,4})
-    Na, Nb, N_templ, B = size(mask)
-    return reshape(mask, Na, 1, 1, Nb, N_templ, B)
-end
-
-# prep_bias: [H, Na, Nb, N_templ, B] + 5D x_norm → [Na, Nb, H, 1, N_templ, B]
-# Mirrors the 4D overload: [H,Nq,Nk,B] → [Nq,Nk,H,1,B].
-function LuxTriangleAttention.prep_bias(
-    bias::AbstractArray{T,5}, ::AbstractArray{T,5}, ::StaticSymbol{:qk}
-) where T
-    H, Na, Nb, N_templ, B = size(bias)
-    return reshape(permutedims(bias, (2, 3, 1, 4, 5)), Na, Nb, H, 1, N_templ, B)
-end
-
-# _batched_matmul: 5D overloads for TriMulCore with [C, Ni, Nj, N_templ, B] tensors.
-# Batch over dims (1=C, 4=N_templ, 5=B); contract over dim 3 (Nj) or dim 2 (Ni).
-LuxTriangleAttention._batched_matmul(::True, a::AbstractArray{T,5}, b::AbstractArray{T,5}) where T<:Real =
-    Lux.batched_matmul(a, b;
-        lhs_contracting_dim=3, rhs_contracting_dim=3,
-        lhs_batching_dims=(1, 4, 5), rhs_batching_dims=(1, 4, 5))
-
-LuxTriangleAttention._batched_matmul(::False, a::AbstractArray{T,5}, b::AbstractArray{T,5}) where T<:Real =
-    Lux.batched_matmul(a, b;
-        lhs_contracting_dim=2, rhs_contracting_dim=2,
-        lhs_batching_dims=(1, 4, 5), rhs_batching_dims=(1, 4, 5))
-
-# _permute_mult_out: 5D output [Ni, Nj, H, N_templ, B] → [H, Ni, Nj, N_templ, B]
-LuxTriangleAttention._permute_mult_out(y::AbstractArray{T,5}) where T =
-    permutedims(y, (3, 1, 2, 4, 5))
+# Mask conventions (_expand_pair_mask is defined in pair_stack_block.jl):
+#   Bool,3  [N, N, B]          — shared mask, replicated across templates
+#   Bool,4  [N, N, N_templ, B] — per-template mask
 
 # =============================================================================
 
@@ -67,6 +24,9 @@ LuxTriangleAttention._permute_mult_out(y::AbstractArray{T,5}) where T =
 Factory function that constructs a `PairStack` configured for rank-5 template tensors
 (Algorithm 16). Operates natively on 5D tensors `[chn_templ, N_res, N_res, N_templ, B]`
 — all templates are processed in parallel.
+
+The N_templ and B dimensions are merged to 4D before each block's forward pass, then
+restored — a zero-cost reshape since all triangle operations are batch-independent.
 
 Default operation order is `tri_mul_first=false` (attention-first), matching the
 original AlphaFold2 template pair stack.
@@ -100,7 +60,7 @@ function TemplatePairStackBlock(
 )
     return PairStackBlock(
         chn_templ, chn_hidden_tri_mul, chn_hidden_tri_att, no_heads, pair_transition_n;
-        tri_mul_first, rank=5, use_bias, epsilon
+        tri_mul_first, rank=4, use_bias, epsilon
     )
 end
 
@@ -130,10 +90,11 @@ which provides type-stable threading without a manual loop.
 
 # Inputs
 - `t`: Template pair embedding `[chn_templ, N_res, N_res, N_templ, B]`
-- `mask`: Pair mask `[N_res, N_res, N_templ, B]` (Bool), or `nothing`
+- `mask`: Pair mask — `[N_res, N_res, B]` (shared across templates),
+  `[N_res, N_res, N_templ, B]` (per-template), or `nothing`
 
 # Returns
-- `t`: Normalized template pair embedding (same shape)
+- `t`: Normalized template pair embedding (same shape as input)
 - `st`: Updated state
 """
 struct TemplatePairStack{B, LN} <: Lux.AbstractLuxContainerLayer{(:blocks, :layer_norm)}
@@ -172,11 +133,22 @@ end
 (l::TemplatePairStack)(z, mask, ps, st) = l((; z, mask), ps, st)
 
 # Lux.Chain threads (; z, mask) through each block type-stably.
+#
+# The N_templ*B merge is done once here so each block receives plain 4D tensors —
+# no repeated reshape overhead inside every block. After the chain outputs are
+# reshaped back to 5D before LayerNorm so the layer-norm parameters (shape
+# [C, 1, 1, 1], matching 5D data) are applied at the correct rank.
 function (l::TemplatePairStack)(inputs::NamedTuple, ps, st)
-    outputs, st_blocks = l.blocks(
-        (z = inputs.z, mask = get(inputs, :mask, nothing)), 
-        ps.blocks, st.blocks
-    )
-    z_update, st_ln = l.layer_norm(outputs.z, ps.layer_norm, st.layer_norm)
-    return z_update, merge(st, (; blocks=st_blocks, layer_norm=st_ln))
+    z    = inputs.z
+    mask = get(inputs, :mask, nothing)
+    C, Ni, Nj, N_templ, B = size(z)
+
+    z4    = reshape(z, C, Ni, Nj, N_templ * B)
+    mask4 = _expand_pair_mask(mask, Ni, Nj, N_templ, B)
+
+    outputs, st_blocks = l.blocks((z=z4, mask=mask4), ps.blocks, st.blocks)
+
+    z5 = reshape(outputs.z, C, Ni, Nj, N_templ, B)
+    z_out, st_ln = l.layer_norm(z5, ps.layer_norm, st.layer_norm)
+    return z_out, merge(st, (; blocks=st_blocks, layer_norm=st_ln))
 end

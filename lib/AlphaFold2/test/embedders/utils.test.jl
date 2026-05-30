@@ -217,7 +217,7 @@ end
 
                         feat_4d = build_template_pair_feat(pos_t, mask_t, aa_t, apos_t, amask_t)
                         
-                        @testset "Python parity" begin
+                        @testset "Parity with 4D version" begin
                             @test feat_5d[:, :, :, t, :] ≈ feat_4d
                         end
 

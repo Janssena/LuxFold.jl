@@ -2,54 +2,9 @@ const PyTemplateSingleEmbedder = pyimport("openfold.model.embedders").TemplateSi
 const PyTemplatePairEmbedder   = pyimport("openfold.model.embedders").TemplatePairEmbedder
 const PyTemplateEmbedder       = pyimport("openfold.model.embedders").TemplateEmbedder
 
-# ===  Dimension conventions  ===
-#
-# Julia angle_feat:  [C, N_res, N_templ, B]  ←→  Python: [B, N_templ, N_res, C]
-# Julia pair_feat:   [C, N,     N, N_templ, B]  ←→  Python: [B, N_templ, N, N, C]
-# Julia z:           [C_z, N, N, B]          ←→  Python: [B, N, N, C_z]
-# Julia pair_mask:   [N, N, B] Bool          ←→  Python: [B, N, N] Bool
-# Julia template_mask: [N_templ, B] Bool     ←→  Python: [B, N_templ] Float
-
-# angle to Python:      to_py(permutedims(x, (4, 3, 2, 1)); swap_batch_dim=false)
-# pair_feat to Python:  to_py(permutedims(x, (5, 4, 2, 3, 1)); swap_batch_dim=false)
-# angle from Python:    permutedims(to_jl(y; swap_batch_dim=false), (4, 3, 2, 1))
-# pair_feat from Python: permutedims(to_jl(y; swap_batch_dim=false), (5, 3, 4, 2, 1))
-
-# ===  Sync helpers  ===
-
 function sync_single_embedder!(py_emb, jl_ps)
     sync_dense!(py_emb.linear_1, jl_ps.chain.linear_1)
     sync_dense!(py_emb.linear_2, jl_ps.chain.linear_2)
-end
-
-function sync_triangle_attention!(py_att, jl_ps)
-    sync_layernorm!(py_att.layer_norm, jl_ps.layer_norm)
-    sync_dense!(py_att.linear, jl_ps.linear)
-    sync_af3_attention!(py_att.mha, jl_ps.mha)
-end
-
-function sync_triangle_multiplication!(py_mul, jl_ps)
-    sync_layernorm!(py_mul.layer_norm_in, jl_ps.layer_norm)
-    if isempty(jl_ps.core.glu_ab.gate)
-        # Fused GLU
-        W = jl_ps.core.glu_ab.linear.weight
-        C = size(W, 1) ÷ 2
-        ps_p = (; weight=view(W, 1:C, :))
-        ps_g = (; weight=view(W, C+1:2C, :))
-        if :bias ∈ keys(jl_ps.core.glu_ab.linear)
-            b = jl_ps.core.glu_ab.linear.bias
-            ps_p = merge(ps_p, (; bias=view(b, 1:C)))
-            ps_g = merge(ps_g, (; bias=view(b, C+1:2C)))
-        end
-        sync_dense!(py_mul.linear_ab_p, ps_p)
-        sync_dense!(py_mul.linear_ab_g, ps_g)
-    else
-        sync_dense!(py_mul.linear_ab_p, jl_ps.core.glu_ab.linear)
-        sync_dense!(py_mul.linear_ab_g, jl_ps.core.glu_ab.gate)
-    end
-    sync_layernorm!(py_mul.layer_norm_out, jl_ps.core.layer_norm_out)
-    sync_dense!(py_mul.linear_z, jl_ps.core.glu_out.linear)
-    sync_dense!(py_mul.linear_g, jl_ps.core.glu_out.gate)
 end
 
 function sync_template_pair_stack_block!(py_block::PyObject, jl_ps::NamedTuple)
@@ -77,11 +32,6 @@ function sync_template_embedder!(py_emb, jl_ps)
     sync_af3_attention!(py_emb.template_pointwise_att.mha, jl_ps.template_pointwise_att.mha)
 end
 
-# ===  Config builder for PyTemplateEmbedder  ===
-#
-# PyTemplateEmbedder.__init__ uses dict-style access; forward uses attribute-style.
-# ml_collections.ConfigDict supports both.
-
 function _make_py_embedder_config(;
     c_single_in, c_single_out,
     c_pair_in, c_t, c_z, c_m,
@@ -94,37 +44,45 @@ function _make_py_embedder_config(;
     pydict = pyimport("builtins").dict
 
     return ml.ConfigDict(pydict(
-        template_single_embedder = pydict(c_in=c_single_in, c_out=c_single_out),
-        template_pair_embedder   = pydict(c_in=c_pair_in,   c_out=c_t),
-        template_pair_stack      = pydict(
-            c_t                  = c_t,
-            c_hidden_tri_att     = c_hidden_tri_att,
-            c_hidden_tri_mul     = c_hidden_tri_mul,
-            no_blocks            = no_blocks,
-            no_heads             = no_heads_tri,
-            pair_transition_n    = pair_transition_n,
-            dropout_rate         = 0.0,
-            tri_mul_first        = false,
+        template_single_embedder = pydict(
+            c_in = c_single_in, 
+            c_out = c_single_out
+        ),
+        template_pair_embedder = pydict(
+            c_in = c_pair_in,   
+            c_out = c_t)
+        ,
+        template_pair_stack = pydict(
+            c_t = c_t,
+            c_hidden_tri_att = c_hidden_tri_att,
+            c_hidden_tri_mul = c_hidden_tri_mul,
+            no_blocks = no_blocks,
+            no_heads = no_heads_tri,
+            pair_transition_n = pair_transition_n,
+            dropout_rate = 0.0,
+            tri_mul_first = false,
             fuse_projection_weights = true,
-            blocks_per_ckpt      = nothing,
-            inf                  = 1e9,
+            blocks_per_ckpt = nothing,
+            inf = 1e9,
         ),
         template_pointwise_attention = pydict(
-            c_t      = c_t,
-            c_z      = c_z,
+            c_t = c_t,
+            c_z = c_z,
             c_hidden = c_hidden_pt_att,
             no_heads = no_heads_pt_att,
-            inf      = 1e9,
+            inf = 1e9,
         ),
-        inf              = 1e9,
-        eps              = 1e-20,
-        use_unit_vector  = false,
-        embed_angles     = embed_angles,
-        distogram        = pydict(min_bin=3.25, max_bin=50.75, no_bins=39),
+        inf = 1e9,
+        eps = 1e-20,
+        use_unit_vector = false,
+        embed_angles = embed_angles,
+        distogram = pydict(
+            min_bin=3.25, 
+            max_bin=50.75, 
+            no_bins=39
+        ),
     ))
 end
-
-# ===  Input builders  ===
 
 # Generates a full set of Julia-layout template inputs for TemplateEmbedder tests.
 # embed_angles=true also builds angle_feat and the raw torsion arrays.
@@ -194,18 +152,18 @@ end
 rng = Random.Xoshiro(42)
 
 # Shared dims
-C_PAIR_IN    = 88
-C_ANGLE_IN   = 57
-C_T          = 16     # template embedding channels
-C_Z          = 32     # pair embedding channels
-C_M          = 64     # MSA/angle output channels
+C_PAIR_IN = 88
+C_ANGLE_IN = 57
+C_T = 16     # template embedding channels
+C_Z = 32     # pair embedding channels
+C_M = 64     # MSA/angle output channels
 C_HIDDEN_TRI_ATT = 4
 C_HIDDEN_TRI_MUL = 16
 C_HIDDEN_PT_ATT  = 4
-NO_BLOCKS    = 2
+NO_BLOCKS = 2
 NO_HEADS_TRI = 4
-NO_HEADS_PT  = 4
-PT_N         = 2      # pair transition expansion factor
+NO_HEADS_PT = 4
+PT_N = 2      # pair transition expansion factor
 N_RES, N_TEMPL, B = 6, 3, 2
 
 @testset "Template Embedder Pipeline" begin

@@ -202,11 +202,9 @@ function (l::TemplateEmbedder)(pair_feat, pair_mask, template_mask, z, angle_fea
     )
 
     # --- 2. Refine via TemplatePairStack.
-    # pair_mask [N, N, B] is broadcast over N_templ via a zero-copy singleton reshape.
-    # The 4D Bool mask dispatches to the ending_permute / prep_mask overloads in
-    # template_pair_stack.jl that handle the 6D logit shape correctly.
-    stack_mask = reshape(pair_mask, N_res, N_res, 1, B)   # [N, N, 1, B] — free view
-    t, st_tps = l.template_pair_stack(t, stack_mask, ps.template_pair_stack, st.template_pair_stack)
+    # pair_mask [N, N, B] is shared across all templates; TemplatePairStack expands it
+    # internally to [N, N, N_templ*B] when merging the template and batch dimensions.
+    t, st_tps = l.template_pair_stack(t, pair_mask, ps.template_pair_stack, st.template_pair_stack)
 
     # --- 3. Fuse templates into pair via pointwise cross-attention.
     # template_mask [N_templ, B] Bool — passed as mask (not bias) inside TPA.
