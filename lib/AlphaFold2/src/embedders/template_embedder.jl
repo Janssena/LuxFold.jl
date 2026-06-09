@@ -27,18 +27,18 @@ struct TemplateSingleEmbedder{C} <: Lux.AbstractLuxContainerLayer{(:chain,)}
 end
 
 function TemplateSingleEmbedder(chn_in::Int, chn_out::Int; use_bias=true)
-    use_bias = resolve_defaults(use_bias, (:linear_1, :linear_2))
+    use_bias = resolve_defaults(use_bias, (:layer_1, :layer_2))
     return TemplateSingleEmbedder(
         Lux.Chain(
-            linear_1 = Lux.Dense(chn_in  => chn_out, Lux.relu; use_bias=use_bias.linear_1),
-            linear_2 = Lux.Dense(chn_out => chn_out;            use_bias=use_bias.linear_2),
+            Lux.Dense(chn_in  => chn_out, Lux.relu; use_bias=use_bias.layer_1),
+            Lux.Dense(chn_out => chn_out;            use_bias=use_bias.layer_2),
         )
     )
 end
 
 function (l::TemplateSingleEmbedder)(x, ps, st)
     y, st_chain = l.chain(x, ps.chain, st.chain)
-    return y, (; chain=st_chain)
+    return y, merge(st, (; chain=st_chain))
 end
 
 # =============================================================================
@@ -78,7 +78,7 @@ end
 
 function (l::TemplatePairEmbedder)(x, ps, st)
     y, st_linear = l.linear(x, ps.linear, st.linear)
-    return y, (; linear=st_linear)
+    return y, merge(st, (; linear=st_linear))
 end
 
 # =============================================================================

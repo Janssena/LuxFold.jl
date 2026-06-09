@@ -11,6 +11,9 @@ single-row MSA embedding and a pair embedding.
 - `chn_msa`: Channel dimension of the MSA embedding
 - `relpos_k`: Half-window for relative positional encoding
 
+# Keyword Arguments
+- `use_bias`: Bool or NamedTuple for per-layer bias control (default: `true`)
+
 # Inputs
 - `target_feat`: Target feature tensor of shape `[tf_dim, N, B]`
 - `residue_index`: Residue index tensor of shape `[N, B]`

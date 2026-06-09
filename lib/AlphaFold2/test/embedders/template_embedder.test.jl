@@ -3,8 +3,8 @@ const PyTemplatePairEmbedder   = pyimport("openfold.model.embedders").TemplatePa
 const PyTemplateEmbedder       = pyimport("openfold.model.embedders").TemplateEmbedder
 
 function sync_single_embedder!(py_emb, jl_ps)
-    sync_dense!(py_emb.linear_1, jl_ps.chain.linear_1)
-    sync_dense!(py_emb.linear_2, jl_ps.chain.linear_2)
+    sync_dense!(py_emb.linear_1, jl_ps.chain.layer_1)
+    sync_dense!(py_emb.linear_2, jl_ps.chain.layer_2)
 end
 
 function sync_template_pair_stack_block!(py_block::PyObject, jl_ps::NamedTuple)
