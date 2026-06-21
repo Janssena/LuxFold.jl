@@ -37,19 +37,19 @@ include("layers/transition.jl")
 include("layers/pair_stack_block.jl")
 export Transition, MSATransition, PairTransition, PairStackBlock
 
-include("structure_module/backbone_update.jl")
+include("structure-module/backbone_update.jl")
 export BackboneUpdate
 
-include("structure_module/angle_resnet.jl")
+include("structure-module/angle_resnet.jl")
 export AngleResnetBlock, AngleResnet
 
-include("structure_module/structure_module_transition.jl")
+include("structure-module/structure_module_transition.jl")
 export StructureModuleTransitionLayer, StructureModuleTransition
 
-include("structure_module/ipa.jl")
+include("structure-module/ipa.jl")
 export PointProjection, HeadWeights, InvariantPointAttention
 
-include("structure_module/structure_module.jl")
+include("structure-module/structure_module.jl")
 export StructureModuleFold, StructureModule
 
 include("evoformer/msa_attention.jl")
@@ -100,9 +100,6 @@ export AF2_MODEL_REGISTRY, af2_weight_filename
 include("utils/weight_loading.jl")
 export load_alphafold2_weights!, download_alphafold2_weights
 export weights_dir, set_weights_dir!
-
-include("af2_input.jl")
-export AlphaFold2Input, to_feats
 
 end # module AlphaFold2
 
