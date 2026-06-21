@@ -1,0 +1,5 @@
+include("msa_attention.test.jl")
+include("evoformer_block.test.jl")
+include("evoformer_stack.test.jl")
+include("extra_msa_block.test.jl")
+include("extra_msa_stack.test.jl")
