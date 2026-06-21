@@ -1,2 +1,5 @@
+include("rigid_utils.test.jl")
 include("scoring.test.jl")
 include("geometry.test.jl")
+include("atom_utils.test.jl")
+include("feats.test.jl")

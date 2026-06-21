@@ -116,15 +116,16 @@ function compute_tm(
     tm_per_bin = @. one(T) / (one(T) + bc ^ 2 / d0^2)
     predicted_tm_term = dropdims(sum(probs .* tm_per_bin; dims=1); dims=1)
 
-    pair_mask = ones(T, N, N, B)
-    if interface && asym_id !== nothing
-        pair_mask .*= (reshape(asym_id, N, 1, B) .!= reshape(asym_id, 1, N, B))
-    end
-
-    predicted_tm_term .*= pair_mask
-
     rw = reshape(residue_weights, 1, N, B)
-    pair_residue_weights = pair_mask .* (rw .* permutedims(rw, (2, 1, 3)))
+    rw_outer = rw .* permutedims(rw, (2, 1, 3))    # [N, N, B]
+
+    if interface && asym_id !== nothing
+        interface_mask = (reshape(asym_id, N, 1, B) .!= reshape(asym_id, 1, N, B))  # [N,N,B] Bool
+        @. predicted_tm_term = ifelse(interface_mask, predicted_tm_term, zero(T))
+        pair_residue_weights = ifelse.(interface_mask, rw_outer, zero(T))
+    else
+        pair_residue_weights = rw_outer
+    end
     denom = sum(pair_residue_weights; dims=2) .+ eps
     normed_residue_mask = pair_residue_weights ./ denom
 

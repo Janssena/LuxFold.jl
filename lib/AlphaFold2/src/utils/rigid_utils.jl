@@ -1,15 +1,19 @@
 using LinearAlgebra: eigen, Symmetric
 
 """
-    Rigid{T}
+    Rigid{Rtype, Ttype}
 
 Rigid-body frame representation: an orthonormal rotation and a translation, per
-residue and batch element.
+residue and batch element. Device-agnostic — `Rtype` and `Ttype` may be any
+`AbstractArray` subtype (Array, CuArray, ROCArray, MetalArray, …).
 
 Fields:
-- `rot::Array{T, 4}`     `[3, 3, N, B]` — orthonormal rotation matrices
-- `trans::Array{T, 3}`   `[3, N, B]`    — translation vectors
-- `quats::Array{T, 3}`   `[4, N, B]`    — quaternion form of `rot`
+- `rot::Rtype`    — rotation matrices;   leading dims `[3, 3]`, trailing `[spatial..., B]`
+- `trans::Ttype`  — translation vectors; leading dim  `[3]`,    trailing `[spatial..., B]`
+- `quats::Ttype`  — quaternions;         leading dim  `[4]`,    trailing `[spatial..., B]`
+
+`Rtype` has two extra leading dimensions compared to `Ttype` (the 3×3 rotation block).
+Use `eltype(r)` to recover the scalar element type.
 
 We store `quats` alongside `rot` for **parity with openfold**. The Python
 `Rigid` keeps its rotation in quaternion form internally and only converts to a
@@ -22,34 +26,54 @@ same rotation. Carrying `quats` avoids both issues.
 Tensor convention: channel/coord-first, batch-last (`[3, …, N, B]`),
 matching the rest of LuxFold.jl.
 """
-struct Rigid{T}
-    rot::Array{T, 4}     # [3, 3, N, B]
-    trans::Array{T, 3}   # [3, N, B]
-    quats::Array{T, 3}   # [4, N, B]
+struct Rigid{Rtype<:AbstractArray, Ttype<:AbstractArray}
+    rot::Rtype
+    trans::Ttype
+    quats::Ttype
 end
 
-# Outer constructor from quats: derive rot from quats so they stay consistent.
-function Rigid(quats::Array{T, 3}, trans::Array{T, 3}) where T
+Base.eltype(::Type{Rigid{Rtype, Ttype}}) where {Rtype, Ttype} = eltype(Rtype)
+Base.eltype(r::Rigid) = eltype(typeof(r))
+
+# Outer constructor from quats + trans: derive rot from quats so they stay consistent.
+function Rigid(quats::Ttype, trans::Ttype) where {Ttype<:AbstractArray}
     @assert size(quats, 1) == 4 "quats must have leading dim 4"
     @assert size(trans, 1) == 3 "trans must have leading dim 3"
     rot = quat_to_rotmat(quats)
-    return Rigid{T}(rot, trans, quats)
+    return Rigid{typeof(rot), Ttype}(rot, trans, quats)
 end
 
-# Outer constructor from rot+trans only: derive quats from rot.
-# Caller takes responsibility for `rot` being orthonormal.
-function Rigid(rot::Array{T, 4}, trans::Array{T, 3}) where T
+# Outer constructor from rot + trans: derive quats from rot.
+# Note: rot_to_quat uses eigen (CPU-only) — use only in preprocessing, not the forward pass.
+function Rigid(rot::Rtype, trans::Ttype) where {Rtype<:AbstractArray, Ttype<:AbstractArray}
     @assert size(rot, 1) == 3 && size(rot, 2) == 3 "rot must have leading dims (3, 3)"
     @assert size(trans, 1) == 3 "trans must have leading dim 3"
     quats = rot_to_quat(rot)
-    return Rigid{T}(rot, trans, quats)
+    return Rigid{Rtype, Ttype}(rot, trans, quats)
 end
+
+"""
+    Rigid(tensor7)
+
+Reconstruct a `Rigid` from a `[7, N, B]` packed tensor (inverse of `to_tensor_7`).
+First 4 entries are the quaternion `(a, b, c, d)`; last 3 are the translation.
+
+Device-agnostic: the returned `Rigid` lives on the same device as `tensor7`.
+"""
+function Rigid(tensor7::AbstractArray)
+    @assert size(tensor7, 1) == 7 "tensor7 leading dim must be 7"
+    return Rigid(tensor7[1:4, :, :], tensor7[5:7, :, :])
+end
+
+
+# === rigid_identity ===============================================================
 
 """
     rigid_identity(T, N, B)
 
 Identity rigid frame at every (residue, batch) position: rotation = I, translation = 0,
-quaternion = (1, 0, 0, 0).
+quaternion = (1, 0, 0, 0). Returns a CPU-resident `Rigid`. Use `rigid_identity(like, N, B)`
+in the forward pass to keep allocation on the target device.
 """
 function rigid_identity(::Type{T}, N::Integer, B::Integer) where T
     rot = zeros(T, 3, 3, N, B)
@@ -61,7 +85,27 @@ function rigid_identity(::Type{T}, N::Integer, B::Integer) where T
     trans = zeros(T, 3, N, B)
     quats = zeros(T, 4, N, B)
     quats[1, :, :] .= one(T)
-    return Rigid{T}(rot, trans, quats)
+    return Rigid{Array{T,4}, Array{T,3}}(rot, trans, quats)
+end
+
+"""
+    rigid_identity(like, N, B)
+
+Device-aware overload: allocates the identity frame on the same device and storage
+type as `like`. Use this in the forward pass (e.g., `rigid_identity(inputs.s, N, B)`)
+so that `Rigid` fields stay on-device without explicit device transfers.
+"""
+function rigid_identity(like::AbstractArray{T}, N::Integer, B::Integer) where T
+    rot   = similar(like, T, 3, 3, N, B); fill!(rot,   zero(T))
+    trans = similar(like, T, 3, N, B);    fill!(trans,  zero(T))
+    quats = similar(like, T, 4, N, B);    fill!(quats,  zero(T))
+    @inbounds for b in 1:B, n in 1:N
+        rot[1, 1, n, b] = one(T)
+        rot[2, 2, n, b] = one(T)
+        rot[3, 3, n, b] = one(T)
+    end
+    quats[1, :, :] .= one(T)
+    return Rigid{typeof(rot), typeof(trans)}(rot, trans, quats)
 end
 
 
@@ -80,7 +124,7 @@ generalised), then add the broadcasted translation.
 
 Confirmed against manual computation (max_diff = 0.0) for `[3, P, H, N, B]`.
 """
-function apply(r::Rigid{T}, pts::AbstractArray{T}) where T
+function apply(r::Rigid, pts::AbstractArray)
     return apply_rigid(r.rot, r.trans, pts)
 end
 
@@ -103,7 +147,7 @@ end
 Inverse of `apply`: transform points from global frame back to local frame —
 `Rᵀ · (pts - t)`. Same general N-D shape support as `apply`.
 """
-function invert_apply(r::Rigid{T}, pts::AbstractArray{T}) where T
+function invert_apply(r::Rigid, pts::AbstractArray)
     @assert size(pts, 1) == 3 "pts leading dim must be 3 (xyz)"
     N = size(r.rot, 3); B = size(r.rot, 4)
     extra = size(pts)[2:end-2]
@@ -125,6 +169,7 @@ Convert quaternions `[4, N, B]` to rotation matrices `[3, 3, N, B]`.
 
 Uses the standard quaternion-to-rotation formula. Quaternion layout is
 `(a, b, c, d)` matching openfold convention (`a` = scalar/real part).
+Allocation is device-agnostic: output lives on the same device as `q`.
 """
 function quat_to_rotmat(q::AbstractArray{T, 3}) where T
     @assert size(q, 1) == 4 "quaternion leading dim must be 4"
@@ -133,7 +178,7 @@ function quat_to_rotmat(q::AbstractArray{T, 3}) where T
     b = @view q[2, :, :]
     c = @view q[3, :, :]
     d = @view q[4, :, :]
-    R = zeros(T, 3, 3, N, B)
+    R = similar(q, T, 3, 3, N, B)
     @. R[1, 1, :, :] = a^2 + b^2 - c^2 - d^2
     @. R[1, 2, :, :] = 2 * (b*c - a*d)
     @. R[1, 3, :, :] = 2 * (b*d + a*c)
@@ -151,6 +196,9 @@ end
 
 Convert rotation matrices `[3, 3, N, B]` to quaternions `[4, N, B]` via the
 4×4 symmetric matrix eigh approach (matches openfold `rot_to_quat`).
+
+**CPU-only**: uses `LinearAlgebra.eigen` per residue. Call only in preprocessing,
+not in the GPU forward pass.
 
 For identity rotation this gives `(1, 0, 0, 0)` exactly; for general rotations
 the sign of the quaternion is ambiguous (`q` and `-q` are equivalent rotations).
@@ -251,7 +299,7 @@ Algorithm (matches Python):
 3. `trans_update = current_rot · t_update` (rotation-only apply, no translation)
 4. `new_trans = trans + trans_update`
 """
-function compose_q_update_vec(r::Rigid{T}, update::AbstractArray{T, 3}) where T
+function compose_q_update_vec(r::Rigid, update::AbstractArray)
     @assert size(update, 1) == 6 "update leading dim must be 6 (3 quat + 3 trans)"
     q_update = @view update[1:3, :, :]
     t_update = @view update[4:6, :, :]
@@ -271,7 +319,7 @@ function compose_q_update_vec(r::Rigid{T}, update::AbstractArray{T, 3}) where T
     # 4. Compose translations
     new_trans = r.trans .+ trans_update
 
-    return Rigid{T}(new_rot, new_trans, new_quats)
+    return Rigid{typeof(new_rot), typeof(new_trans)}(new_rot, new_trans, new_quats)
 end
 
 # Rotation-only apply (no translation). Used internally by compose_q_update_vec
@@ -291,9 +339,10 @@ end
 Return a new `Rigid` whose rotation is unchanged and whose translation is
 scaled by `factor`.
 """
-function scale_translation(r::Rigid{T}, factor::Real) where T
+function scale_translation(r::Rigid, factor::Real)
+    T = eltype(r)
     f = T(factor)
-    return Rigid{T}(r.rot, r.trans .* f, r.quats)
+    return Rigid{typeof(r.rot), typeof(r.trans)}(r.rot, r.trans .* f, r.quats)
 end
 
 """
@@ -301,11 +350,12 @@ end
 
 Serialise a Rigid into a single `[7, N, B]` tensor: first 4 entries are the
 quaternion (a, b, c, d), last 3 entries are the translation. Matches Python
-`Rigid.to_tensor_7()`.
+`Rigid.to_tensor_7()`. Output lives on the same device as `r.trans`.
 """
-function to_tensor_7(r::Rigid{T}) where T
+function to_tensor_7(r::Rigid)
+    T = eltype(r)
     N, B = size(r.trans, 2), size(r.trans, 3)
-    out = Array{T}(undef, 7, N, B)
+    out = similar(r.trans, T, 7, N, B)
     out[1:4, :, :] .= r.quats
     out[5:7, :, :] .= r.trans
     return out
@@ -317,11 +367,13 @@ end
 Serialise a Rigid into a homogeneous transform tensor `[4, 4, N, B]`. The 3×3
 rotation occupies the top-left block, translation occupies the top-right
 column, and the bottom row is `[0, 0, 0, 1]`. Matches Python
-`Rigid.to_tensor_4x4()`.
+`Rigid.to_tensor_4x4()`. Output lives on the same device as `r.trans`.
 """
-function to_tensor_4x4(r::Rigid{T}) where T
+function to_tensor_4x4(r::Rigid)
+    T = eltype(r)
     N, B = size(r.trans, 2), size(r.trans, 3)
-    out = zeros(T, 4, 4, N, B)
+    out = similar(r.trans, T, 4, 4, N, B)
+    fill!(out, zero(T))
     out[1:3, 1:3, :, :] .= r.rot
     out[1:3, 4, :, :] .= r.trans
     out[4, 4, :, :] .= one(T)
