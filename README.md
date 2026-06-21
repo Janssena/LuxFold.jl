@@ -88,7 +88,7 @@ See [lib/AlphaFold2/README.md](lib/AlphaFold2/README.md) for detailed documentat
 | Component | Status |
 |-----------|--------|
 | **LuxFoldCore** — Shared Lux layers | ✅ Stable |
-| **AlphaFold2** — Model layers + tests | ✅ Near-complete |
+| **AlphaFold2** — Model layers + tests | ✅ Complete |
 | **AlphaFold2** — Weight loading | 🚧 In progress |
 | **AlphaFold2** — Full model integration | 🚧 In progress |
 | **Data pipeline** (PDB/mmCIF parsing, MSA, features) | 🚧 In progress |
