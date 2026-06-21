@@ -18,11 +18,6 @@ lib/
   Boltz2/                Work-in-progress
   PythonTestHelpers/     Shared utilities for Python interop (weight sync, tensor conversion)
 src/                     Top-level LuxFold.jl entry (data pipeline: PDB parsing, MSA, features)
-python/
-  openfold/              Reference Python implementation (used in numerical parity tests)
-  minAlphaFold2/         Minimal AF2 reference
-  openfold-3/            Reference for AF3
-openspec/                Living design documents and architecture context
 ```
 
 ## AlphaFold2 — Implementation Status
