@@ -10,7 +10,7 @@ Embeds template torsion-angle features into the MSA channel dimension
 
 # Arguments
 - `chn_in`: Input channel dimension (e.g. 57 for monomer angle features)
-- `chn_out`: Output channel dimension (usually `c_m` = 256)
+- `chn_out`: Output channel dimension (usually `chn_m` = 256)
 
 # Keyword Arguments
 - `use_bias`: `Bool` or `NamedTuple` for per-layer bias control (default: `true`)
@@ -30,8 +30,8 @@ function TemplateSingleEmbedder(chn_in::Int, chn_out::Int; use_bias=true)
     use_bias = resolve_defaults(use_bias, (:layer_1, :layer_2))
     return TemplateSingleEmbedder(
         Lux.Chain(
-            Lux.Dense(chn_in  => chn_out, Lux.relu; use_bias=use_bias.layer_1),
-            Lux.Dense(chn_out => chn_out;            use_bias=use_bias.layer_2),
+            Lux.Dense(chn_in => chn_out, Lux.relu; use_bias=use_bias.layer_1),
+            Lux.Dense(chn_out => chn_out; use_bias=use_bias.layer_2),
         )
     )
 end
@@ -56,7 +56,7 @@ are projected in parallel.
 
 # Arguments
 - `chn_in`: Input channel dimension (e.g. 88 for monomer pair features)
-- `chn_out`: Output channel dimension (usually `c_t` = 64)
+- `chn_out`: Output channel dimension (usually `chn_t` = 64)
 
 # Keyword Arguments
 - `use_bias`: Whether to include bias in the projection (default: `true`)
@@ -72,9 +72,8 @@ struct TemplatePairEmbedder{L} <: Lux.AbstractLuxContainerLayer{(:linear,)}
     linear::L
 end
 
-function TemplatePairEmbedder(chn_in::Int, chn_out::Int; use_bias=true)
-    return TemplatePairEmbedder(Lux.Dense(chn_in => chn_out; use_bias))
-end
+TemplatePairEmbedder(chn_in::Int, chn_out::Int; use_bias=true) =
+    TemplatePairEmbedder(Lux.Dense(chn_in => chn_out; use_bias))
 
 function (l::TemplatePairEmbedder)(x, ps, st)
     y, st_linear = l.linear(x, ps.linear, st.linear)
@@ -85,11 +84,9 @@ end
 # TemplateEmbedder — top-level pipeline
 # =============================================================================
 
-# Angle embedding dispatch — type-stable: angle_feat::Nothing returns nothing.
 _embed_single(::Any, ::Nothing, ps, st) = nothing, st
-function _embed_single(embedder, angle_feat::AbstractArray, ps, st)
-    return embedder(angle_feat, ps, st)
-end
+_embed_single(embedder, angle_feat::AbstractArray, ps, st) = 
+    embedder(angle_feat, ps, st)
 
 """
     TemplateEmbedder(chn_templ_in_pair, chn_templ_in_angles,
@@ -106,9 +103,9 @@ All templates are processed in parallel through the pipeline — no loop over `N
 # Arguments
 - `chn_templ_in_pair`: Input pair feature channels (e.g. 88 for monomer)
 - `chn_templ_in_angles`: Input angle feature channels (e.g. 57 for monomer)
-- `chn_templ`: Template embedding channel dimension (c_t, e.g. 64)
-- `chn_pair`: Pair representation channel dimension (c_z, e.g. 128)
-- `chn_msa`: MSA representation channel dimension for angle output (c_m, e.g. 256)
+- `chn_templ`: Template embedding channel dimension (chn_t, e.g. 64)
+- `chn_pair`: Pair representation channel dimension (chn_z, e.g. 128)
+- `chn_msa`: MSA representation channel dimension for angle output (chn_m, e.g. 256)
 - `chn_hidden_tri_att`: Head dimension for triangular attention
 - `chn_hidden_tri_mul`: Hidden dimension for triangular multiplication
 - `no_templ_blocks`: Number of blocks in the template pair stack
@@ -136,9 +133,9 @@ All templates are processed in parallel through the pipeline — no loop over `N
   - `template_single`: Angle embedding `[chn_msa, N_res, N_templ, B]`, or `nothing`
 - `st`: Updated state
 """
-struct TemplateEmbedder{TSE, TPE, TPS, TPA} <:
-    Lux.AbstractLuxContainerLayer{(:template_single_embedder, :template_pair_embedder,
-                                    :template_pair_stack, :template_pointwise_att)}
+struct TemplateEmbedder{TSE, TPE, TPS, TPA} <: Lux.AbstractLuxContainerLayer{(
+    :template_single_embedder, :template_pair_embedder, :template_pair_stack, :template_pointwise_att
+)}
     template_single_embedder::TSE
     template_pair_embedder::TPE
     template_pair_stack::TPS
@@ -162,10 +159,10 @@ function TemplateEmbedder(
     use_bias=true,
     epsilon=1f-5
 )
-    use_bias = resolve_defaults(
-        use_bias,
-        (:template_single_embedder, :template_pair_embedder,
-         :template_pair_stack, :template_pointwise_att)
+    use_bias = resolve_defaults(use_bias, (
+        :template_single_embedder, :template_pair_embedder,
+        :template_pair_stack, :template_pointwise_att
+        )
     )
 
     return TemplateEmbedder(
@@ -182,53 +179,54 @@ function TemplateEmbedder(
     )
 end
 
-# NamedTuple dispatch — angle_feat absent → nothing (disables angle embedding).
 (l::TemplateEmbedder)(inputs::NamedTuple, ps, st) = l(
     inputs.pair_feat,
-    inputs.pair_mask,
-    inputs.template_mask,
+    get(inputs, :pair_mask, nothing),
+    get(inputs, :template_mask, nothing),
     inputs.z,
     get(inputs, :angle_feat, nothing),
     ps, st
 )
 
-function (l::TemplateEmbedder)(pair_feat, pair_mask, template_mask, z, angle_feat, ps, st)
-    N_res = size(pair_mask, 1)
-    B     = size(pair_mask, ndims(pair_mask))
+function (l::TemplateEmbedder)(pair_feat::AbstractArray{T}, pair_mask, template_mask, z, angle_feat, ps, st) where T
+    B = size(pair_mask, ndims(pair_mask))
 
-    # --- 1. Project pair features: [chn_templ_in_pair, N, N, N_templ, B] → [chn_templ, ...]
     t, st_tpe = l.template_pair_embedder(
         pair_feat, ps.template_pair_embedder, st.template_pair_embedder
     )
 
-    # --- 2. Refine via TemplatePairStack.
-    # pair_mask [N, N, B] is shared across all templates; TemplatePairStack expands it
-    # internally to [N, N, N_templ*B] when merging the template and batch dimensions.
     t, st_tps = l.template_pair_stack(t, pair_mask, ps.template_pair_stack, st.template_pair_stack)
 
-    # --- 3. Fuse templates into pair via pointwise cross-attention.
-    # template_mask [N_templ, B] Bool — passed as mask (not bias) inside TPA.
     t_att, st_tpa = l.template_pointwise_att(
         t, z, template_mask, ps.template_pointwise_att, st.template_pointwise_att
     )
 
-    # --- 4. Zero out pair update when no valid templates exist for a batch element.
-    # sum(template_mask; dims=1) > 0 → [1, B]; reshape broadcasts over [chn_pair, N, N, B].
-    t_valid = reshape(sum(template_mask; dims=1) .> 0, 1, 1, 1, B)
-    t_att   = t_att .* t_valid
+    t_valid = reshape(any.(eachcol(template_mask)), 1, 1, 1, B)
+    @. t_att = ifelse(t_valid, t_att, zero(T))
 
-    # --- 5. Angle embedding (optional — dispatches on angle_feat type).
     template_single, st_tse = _embed_single(
         l.template_single_embedder, angle_feat,
         ps.template_single_embedder, st.template_single_embedder
     )
 
     st_new = merge(st, (;
-        template_pair_embedder   = st_tpe,
-        template_pair_stack      = st_tps,
-        template_pointwise_att   = st_tpa,
+        template_pair_embedder = st_tpe,
+        template_pair_stack = st_tps,
+        template_pointwise_att = st_tpa,
         template_single_embedder = st_tse,
     ))
 
     return (; template_pair=t_att, template_single), st_new
 end
+
+# ==============================================================================
+# Canonical config factories
+# ==============================================================================
+
+TemplateEmbedder(s::Symbol; kwargs...) = TemplateEmbedder(static(s); kwargs...)
+# chn_templ_in_pair: 88 (monomer) vs 128 (multimer = chn_z)
+# chn_templ_in_angles: 57 (monomer) vs 34 (multimer)
+TemplateEmbedder(::StaticSymbol{:monomer}; kwargs...) =
+    TemplateEmbedder(88, 57, 64, 128, 256, 16, 64, 2, 4, 2, 16, 4; kwargs...)
+TemplateEmbedder(::StaticSymbol{:multimer}; kwargs...) =
+    TemplateEmbedder(128, 34, 64, 128, 256, 16, 64, 2, 4, 2, 16, 4; kwargs...)

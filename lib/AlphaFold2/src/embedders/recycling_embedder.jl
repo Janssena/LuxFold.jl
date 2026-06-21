@@ -96,3 +96,13 @@ function (l::RecyclingEmbedder)(x::AbstractArray{T}, m, z, ps, st) where T
     st_out = merge(st, (; layer_norm_m=st_ln_m, layer_norm_z=st_ln_z, linear=st_linear))
     return (m = m_update, z = z_update), st_out
 end
+
+# ==============================================================================
+# Canonical config factories
+# ==============================================================================
+
+RecyclingEmbedder(s::Symbol; kwargs...) = 
+    RecyclingEmbedder(static(s); kwargs...)
+
+RecyclingEmbedder(::StaticSymbol; kwargs...) = 
+    RecyclingEmbedder(256, 128; kwargs...)

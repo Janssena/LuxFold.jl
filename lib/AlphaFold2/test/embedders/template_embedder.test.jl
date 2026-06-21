@@ -34,7 +34,7 @@ end
 
 function _make_py_embedder_config(;
     c_single_in, c_single_out,
-    c_pair_in, c_t, c_z, c_m,
+    c_pair_in, chn_t, chn_z, chn_m,
     c_hidden_tri_att, c_hidden_tri_mul,
     no_blocks, no_heads_tri, pair_transition_n,
     c_hidden_pt_att, no_heads_pt_att,
@@ -50,10 +50,10 @@ function _make_py_embedder_config(;
         ),
         template_pair_embedder = pydict(
             c_in = c_pair_in,   
-            c_out = c_t)
+            c_out = chn_t)
         ,
         template_pair_stack = pydict(
-            c_t = c_t,
+            c_t = chn_t,
             c_hidden_tri_att = c_hidden_tri_att,
             c_hidden_tri_mul = c_hidden_tri_mul,
             no_blocks = no_blocks,
@@ -66,8 +66,8 @@ function _make_py_embedder_config(;
             inf = 1e9,
         ),
         template_pointwise_attention = pydict(
-            c_t = c_t,
-            c_z = c_z,
+            c_t = chn_t,
+            c_z = chn_z,
             c_hidden = c_hidden_pt_att,
             no_heads = no_heads_pt_att,
             inf = 1e9,
@@ -240,7 +240,7 @@ N_RES, N_TEMPL, B = 6, 3, 2
 
                         py_config = _make_py_embedder_config(;
                             c_single_in=C_ANGLE_IN, c_single_out=C_M,
-                            c_pair_in=C_PAIR_IN, c_t=C_T, c_z=C_Z, c_m=C_M,
+                            c_pair_in=C_PAIR_IN, chn_t=C_T, chn_z=C_Z, chn_m=C_M,
                             c_hidden_tri_att=C_HIDDEN_TRI_ATT,
                             c_hidden_tri_mul=C_HIDDEN_TRI_MUL,
                             no_blocks=NO_BLOCKS, no_heads_tri=NO_HEADS_TRI,

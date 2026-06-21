@@ -64,36 +64,37 @@ end
 )
 
 function (l::RelativePositionEncoding{False})(residue_index, ps, st)
+    relpos_k = l.relpos_k
     N, B = size(residue_index)
     T = eltype(ps.linear.weight)
 
-    pairwise_diff = T.(reshape(residue_index, N, 1, B) .- reshape(residue_index, 1, N, B))
-    clamped_offset = Int.(clamp.(pairwise_diff, -l.relpos_k, l.relpos_k)) .+ (l.relpos_k + 1)
+    pairwise_diff = reshape(residue_index, N, 1, B) .- reshape(residue_index, 1, N, B)
+    clamped_offset = @. clamp(pairwise_diff, -relpos_k, relpos_k) + (relpos_k + 1)
 
     # Vectorized one-hot encoding: reshape → broadcast → reshape
-    # Avoids CartesianIndices loop which serializes on GPU
     offset_flat = reshape(clamped_offset, :)
     n_total = length(offset_flat)
-    class_idx = reshape(1:(2*l.relpos_k+1), 2*l.relpos_k+1, 1)
+    class_idx = reshape(1:(2*relpos_k+1), 2*relpos_k+1, 1)
     pos_idx = reshape(offset_flat, 1, n_total)
     one_hot_flat = @. T(class_idx == pos_idx)
-    one_hot = reshape(one_hot_flat, 2*l.relpos_k+1, N, N, B)
+    one_hot = reshape(one_hot_flat, 2*relpos_k+1, N, N, B)
 
     y, st_linear = l.linear(one_hot, ps.linear, st.linear)
     return y, merge(st, (; linear=st_linear))
 end
 
 function (l::RelativePositionEncoding{True})(residue_index, asym_id, entity_id, sym_id, ps, st)
+    relpos_k, max_relative_chain = l.relpos_k, l.max_relative_chain
     N, B = size(residue_index)
     T = eltype(ps.linear.weight)
 
-    n_bins_offset = 2 * l.relpos_k + 2
-    n_bins_sym_id = 2 * l.max_relative_chain + 2
+    n_bins_offset = 2 * relpos_k + 2
+    n_bins_sym_id = 2 * max_relative_chain + 2
 
-    pairwise_diff = T.(reshape(residue_index, N, 1, B) .- reshape(residue_index, 1, N, B))
-    clamped_offset = @. clamp(pairwise_diff, -l.relpos_k, l.relpos_k) + l.relpos_k
+    pairwise_diff = reshape(residue_index, N, 1, B) .- reshape(residue_index, 1, N, B)
+    clamped_offset = @. clamp(pairwise_diff, -relpos_k, relpos_k) + relpos_k
     same_chain = reshape(asym_id, N, 1, B) .== reshape(asym_id, 1, N, B)
-    offset_bin = @. Int(round(ifelse(same_chain, clamped_offset, T(2 * l.relpos_k + 1)))) + 1
+    offset_bin = @. ifelse(same_chain, clamped_offset, 2 * relpos_k + 1) + 1
 
     # Vectorized one-hot encoding for offset_bin: reshape → broadcast → reshape
     offset_bin_flat = reshape(offset_bin, :)
@@ -106,10 +107,10 @@ function (l::RelativePositionEncoding{True})(residue_index, asym_id, entity_id, 
     same_entity = T.(reshape(entity_id, N, 1, B) .== reshape(entity_id, 1, N, B))
     same_entity = reshape(same_entity, 1, N, N, B)
 
-    sym_id_diff = T.(reshape(sym_id, N, 1, B) .- reshape(sym_id, 1, N, B))
-    clamped_sym_id = @. clamp(sym_id_diff, -l.max_relative_chain, l.max_relative_chain) + l.max_relative_chain
+    sym_id_diff = reshape(sym_id, N, 1, B) .- reshape(sym_id, 1, N, B)
+    clamped_sym_id = @. clamp(sym_id_diff, -max_relative_chain, max_relative_chain) + max_relative_chain
     same_entity_bool = reshape(entity_id, N, 1, B) .== reshape(entity_id, 1, N, B)
-    sym_id_bin = @. Int(round(ifelse(same_entity_bool, clamped_sym_id, T(2 * l.max_relative_chain + 1)))) + 1
+    sym_id_bin = @. ifelse(same_entity_bool, clamped_sym_id, 2 * max_relative_chain + 1) + 1
 
     # Vectorized one-hot encoding for sym_id_bin: reshape → broadcast → reshape
     sym_id_bin_flat = reshape(sym_id_bin, :)

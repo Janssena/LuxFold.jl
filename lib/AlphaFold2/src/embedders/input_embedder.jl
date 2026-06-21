@@ -8,8 +8,8 @@ to a `RelativePositionEncoding` sub-layer.
 # Arguments
 - `chn_target_feat`: Channel dimension of target features (e.g., 22 for monomer)
 - `chn_msa_feat`: Channel dimension of MSA features (e.g., 49 for monomer)
-- `chn_pair`: Channel dimension of the pair embedding (e.g., c_z = 128)
-- `chn_msa`: Channel dimension of the MSA embedding (e.g., c_m = 256)
+- `chn_pair`: Channel dimension of the pair embedding (e.g., chn_z = 128)
+- `chn_msa`: Channel dimension of the MSA embedding (e.g., chn_m = 256)
 - `relpos_k`: Window size for relative positional encoding (default: 32)
 
 # Keyword Arguments
@@ -78,5 +78,17 @@ function (l::InputEmbedder)(target_feat, residue_index, msa_feat, ps, st)
         relpos_encoding=st_relpos,
     ))
 
-    return (msa = m, pair = z), st_out
+    return (; m, z), st_out
 end
+
+# ==============================================================================
+# Canonical config factories
+# ==============================================================================
+
+InputEmbedder(s::Symbol; kwargs...) = InputEmbedder(static(s); kwargs...)
+
+InputEmbedder(::StaticSymbol{:monomer}; kwargs...) = 
+    InputEmbedder(22, 49, 128, 256, 32; kwargs...)
+
+InputEmbedder(::StaticSymbol{:multimer}; kwargs...) =
+    InputEmbedder(21, 49, 128, 256, 32; merge(kwargs, (is_multimer=true, ))...)

@@ -20,8 +20,8 @@ single-row MSA embedding and a pair embedding.
 - `preembedding`: Pre-embedding tensor of shape `[preembedding_dim, N, B]`
 
 # Returns
-- `m`: Single-row MSA embedding tensor of shape `[c_m, 1, N, B]`
-- `z`: Pair embedding tensor of shape `[c_z, N, N, B]`
+- `m`: Single-row MSA embedding tensor of shape `[chn_m, 1, N, B]`
+- `z`: Pair embedding tensor of shape `[chn_z, N, N, B]`
 - `st`: Updated state
 """
 struct PreEmbeddingEmbedder{L1,L2,L3,L4,R} <: Lux.AbstractLuxContainerLayer{(:linear_target_msa, :linear_preembedding_msa, :linear_preembedding_pair_i, :linear_preembedding_pair_j, :relpos)}
@@ -75,3 +75,15 @@ function (l::PreEmbeddingEmbedder)(target_feat, residue_index, preembedding, ps,
     ))
     return (m = m_update, z = z_update), st_out
 end
+
+# ==============================================================================
+# Canonical config factories
+# ==============================================================================
+
+PreEmbeddingEmbedder(s::Symbol; kwargs...) = PreEmbeddingEmbedder(static(s); kwargs...)
+
+PreEmbeddingEmbedder(::StaticSymbol{:monomer}; kwargs...) = 
+    PreEmbeddingEmbedder(22, 256, 128, 256, 32; kwargs...)
+
+PreEmbeddingEmbedder(::StaticSymbol{:multimer}; kwargs...) = 
+    PreEmbeddingEmbedder(21, 256, 128, 256, 32; merge(kwargs, (is_multimer=true, ))...)

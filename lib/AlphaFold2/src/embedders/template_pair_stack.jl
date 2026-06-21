@@ -98,7 +98,7 @@ which provides type-stable threading without a manual loop.
 - `st`: Updated state
 """
 struct TemplatePairStack{B, LN} <: Lux.AbstractLuxContainerLayer{(:blocks, :layer_norm)}
-    blocks::B    # Lux.Chain of TemplatePairStackBlocks
+    blocks::B
     layer_norm::LN
 end
 
@@ -130,25 +130,25 @@ function TemplatePairStack(
     return TemplatePairStack(blocks, layer_norm)
 end
 
-(l::TemplatePairStack)(z, mask, ps, st) = l((; z, mask), ps, st)
+(l::TemplatePairStack)(inputs::NamedTuple, ps, st) = l(
+    inputs.z, 
+    get(inputs, :mask, nothing), 
+    ps, st
+)
 
-# Lux.Chain threads (; z, mask) through each block type-stably.
-#
 # The N_templ*B merge is done once here so each block receives plain 4D tensors —
 # no repeated reshape overhead inside every block. After the chain outputs are
 # reshaped back to 5D before LayerNorm so the layer-norm parameters (shape
 # [C, 1, 1, 1], matching 5D data) are applied at the correct rank.
-function (l::TemplatePairStack)(inputs::NamedTuple, ps, st)
-    z    = inputs.z
-    mask = get(inputs, :mask, nothing)
+function (l::TemplatePairStack)(z, mask, ps, st)
     C, Ni, Nj, N_templ, B = size(z)
 
-    z4    = reshape(z, C, Ni, Nj, N_templ * B)
-    mask4 = _expand_pair_mask(mask, Ni, Nj, N_templ, B)
+    z4d = reshape(z, C, Ni, Nj, N_templ * B)
+    mask4d = _expand_pair_mask(mask, Ni, Nj, N_templ, B)
 
-    outputs, st_blocks = l.blocks((z=z4, mask=mask4), ps.blocks, st.blocks)
+    outputs, st_blocks = l.blocks((z = z4d, mask = mask4d), ps.blocks, st.blocks)
 
-    z5 = reshape(outputs.z, C, Ni, Nj, N_templ, B)
-    z_out, st_ln = l.layer_norm(z5, ps.layer_norm, st.layer_norm)
+    z5d = reshape(outputs.z, C, Ni, Nj, N_templ, B)
+    z_out, st_ln = l.layer_norm(z5d, ps.layer_norm, st.layer_norm)
     return z_out, merge(st, (; blocks=st_blocks, layer_norm=st_ln))
 end
