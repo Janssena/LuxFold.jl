@@ -135,10 +135,16 @@ end
 A specialized version of `AttentionPairBias` configured for MSA row attention. 
 Sets `rank=4` and standard AlphaFold-style bias/normalization defaults.
 """
-function MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads; kwargs...)
-    return AttentionPairBias(chn_in, chn_z, head_dim, num_heads;
+MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads; kwargs...) =
+    AttentionPairBias(chn_in, chn_z, head_dim, num_heads;
         rank=4,
         chn_cond=nothing,
-        use_bias=(linear_z=true, mha=false, layer_norm_in=true, layer_norm_z=true, linear_out=false),
-        kwargs...)
-end
+        use_bias=(
+            linear_z=false, 
+            mha=(qkv=false, gate=true, out=true), 
+            layer_norm_in=true, 
+            layer_norm_z=true, 
+            linear_out=false
+        ), 
+        kwargs...
+    )
