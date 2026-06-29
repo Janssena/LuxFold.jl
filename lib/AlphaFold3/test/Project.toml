@@ -1,0 +1,8 @@
+[deps]
+AlphaFold3 = "f526a85c-7a8d-4ef7-b237-faab0dcb86c9"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+LuxFoldCore = "52160431-febe-4e64-94fd-5e70c5cfc12c"
+PyCall = "438e738f-606a-5dbb-bf0a-cddfbfd45ab0"
+PythonTestHelpers = "265ba9a6-dbd9-4427-b1ce-23dd0d603735"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
