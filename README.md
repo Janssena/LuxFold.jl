@@ -4,7 +4,7 @@
 
 # LuxFold.jl
 
-LuxFold.jl is a Julia framework for macromolecular structure prediction, built on the [Lux.jl](https://github.com/LuxDL/Lux.jl) deep learning library. It provides a unified interface for running models AlphaFold2 (and, in future, AlphaFold3 and Boltz2) by providing a pipeline for data loading, template selection, and MSA loading.
+LuxFold.jl is a Julia framework for macromolecular structure prediction, built on the [Lux.jl](https://github.com/LuxDL/Lux.jl) deep learning library. It implements AlphaFold2, AlphaFold3, and Boltz2 as independently-versioned packages under `lib/`, with numerical-parity tests against PyTorch reference implementations at Float64, Float32, and Float16.
 
 ## Repository Structure
 
@@ -83,6 +83,39 @@ result = predict(model, features, ps, st; num_recycles=3)
 
 See [lib/AlphaFold2/README.md](lib/AlphaFold2/README.md) for detailed documentation.
 
+## AlphaFold3 — Implementation Status
+
+**All model layers complete and parity-tested** (428 tests passing). The full-model integration is implemented but not yet end-to-end tested.
+
+| Component | Layers | Status |
+|-----------|--------|--------|
+| Layers — PairBlock, SwiGLUTransition, ConditionedTransitionBlock | 4 | ✅ |
+| Pairformer — PairFormerBlock, PairFormerStack | 2 | ✅ |
+| MSA Module — MSAModuleBlock, MSAModuleStack | 2 | ✅ |
+| Atom Module — RefAtomFeatureEmbedder, SequenceLocalAttentionPairBias, AtomAttentionEncoder/Decoder | 4 | ✅ |
+| Embedders — InputEmbedderAllAtom, TemplatePairEmbedderAllAtom + stack, TemplateEmbedderAllAtom, MSA/Ref embedders, FourierEmbedding | 8 | ✅ |
+| Diffusion — DiffusionConditioning, DiffusionModule, DiffusionTransformer + block, NoisyPositionEmbedder, SampleDiffusion | 6 | ✅ |
+| Heads — Distogram, PAE, PDE, pLDDT, ExperimentallyResolved, PairformerEmbedding, AuxiliaryHeads | 7 | ✅ |
+| Utils — relpos, geometry, atomize_utils, atom_attention_block_utils | 4 | ✅ |
+| Full model — AlphaFold3Model | 1 | 🚧 Integration pending |
+
+See [lib/AlphaFold3/README.md](lib/AlphaFold3/README.md) for full details.
+
+## Boltz2 — Implementation Status
+
+**Complete model implementation** (273 tests passing), including the full diffusion sampler and steering potentials.
+
+| Component | Status |
+|-----------|--------|
+| Input embedder — AtomEncoder, AtomAttentionEncoder/Decoder, InputEmbedder | ✅ |
+| Trunk — PairformerModule, PairformerNoSeqModule, MSALayer/Module, RelativePositionEncoder, ContactConditioning, TemplateModule | ✅ |
+| Diffusion — SingleConditioning, PairwiseConditioning, DiffusionConditioning, DiffusionModule, AtomDiffusion | ✅ |
+| Heads — DistogramModule, BFactorModule, AffinityModule, ConfidenceModule, ConfidenceHeads | ✅ |
+| Steering — 9 analytic potentials, rigid alignment, FK resampling loop | ✅ |
+| Full model — Boltz2, BoltzAffinityEnsemble, predict() | ✅ |
+
+See [lib/Boltz2/README.md](lib/Boltz2/README.md) for full details.
+
 ## Project Status
 
 | Component | Status |
@@ -91,9 +124,10 @@ See [lib/AlphaFold2/README.md](lib/AlphaFold2/README.md) for detailed documentat
 | **AlphaFold2** — Model layers + tests | ✅ Complete |
 | **AlphaFold2** — Weight loading | 🚧 In progress |
 | **AlphaFold2** — Full model integration | 🚧 In progress |
+| **AlphaFold3** — All layers | ✅ Complete |
+| **AlphaFold3** — Full model integration | 🚧 In progress |
+| **Boltz2** — Full model | ✅ Complete |
 | **Data pipeline** (PDB/mmCIF parsing, MSA, features) | 🚧 In progress |
-| **AlphaFold3** | 🚧 In progress |
-| **Boltz2** | 🚧 In progress |
 
 ## License
 
