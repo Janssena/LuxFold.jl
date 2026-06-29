@@ -3,7 +3,7 @@ function copy_jl_ps_to_py!(py, jl::AbstractArray{T}; swap_batch_dim=false) where
         @error "copy_jl_ps_to_py! received nothing for py. jl keys: $(keys(jl))"
         return nothing
     end
-    @assert py"type"(py) == pyimport("torch").nn.Parameter "Passed PyObject is not a torch.nn.Parameter (got $(py"type"(py)))"
+    @assert py"isinstance"(py, pyimport("torch").nn.Parameter) "Passed PyObject is not a torch.nn.Parameter (got $(py"type"(py)))"
     @assert py.shape == size(jl) "Shape of py $(py.shape) and jl $(size(jl)) do not match."
     py.data = to_py(jl; swap_batch_dim)
 
@@ -117,7 +117,19 @@ function sync_af3_attention!(py::PyObject, ps::NamedTuple)
         end
     elseif :q in keys(ps.qkv) && :kv in keys(ps.qkv)
         # Version where kv is fused.
-        throw(ErrorException("Not implemented"))
+        sync_dense!(py.linear_q, ps.qkv.q)
+
+        W_kv = ps.qkv.kv.weight
+        C_out_kv = size(W_kv, 1) ÷ 2
+
+        copy_jl_ps_to_py!(py.linear_k.weight, view(W_kv, 1:C_out_kv, :))
+        copy_jl_ps_to_py!(py.linear_v.weight, view(W_kv, C_out_kv+1:2*C_out_kv, :))
+
+        if :bias ∈ keys(ps.qkv.kv) && (py"hasattr"(py.linear_k, "bias") && !isnothing(py.linear_k.bias))
+            B_kv = ps.qkv.kv.bias
+            copy_jl_ps_to_py!(py.linear_k.bias, view(B_kv, 1:C_out_kv))
+            copy_jl_ps_to_py!(py.linear_v.bias, view(B_kv, C_out_kv+1:2*C_out_kv))
+        end
     else # unfused
         sync_dense!(py.linear_q, ps.qkv.q)
         sync_dense!(py.linear_k, ps.qkv.k)
@@ -238,4 +250,36 @@ function sync_boltz2_attention_pair_bias!(py::PyObject, ps::NamedTuple)
     sync_boltz2_attention!(py, ps.mha)
 
     return nothing
+end
+
+function sync_triangle_attention!(py_att::PyObject, jl_ps::NamedTuple)
+    sync_layernorm!(py_att.layer_norm, jl_ps.layer_norm)
+    sync_dense!(py_att.linear, jl_ps.linear)
+    sync_af3_attention!(py_att.mha, jl_ps.mha)
+end
+
+function sync_triangle_multiplication!(py_mul::PyObject, jl_ps::NamedTuple)
+    sync_layernorm!(py_mul.layer_norm_in, jl_ps.layer_norm)
+
+    if isempty(jl_ps.core.glu_ab.gate)
+        # Fused GLU: weight is [2*C_hidden, C_in]; split into projection and gate halves
+        W = jl_ps.core.glu_ab.linear.weight
+        C_out = size(W, 1) ÷ 2
+        ps_p = (; weight=view(W, 1:C_out, :))
+        ps_g = (; weight=view(W, C_out+1:2*C_out, :))
+        if :bias ∈ keys(jl_ps.core.glu_ab.linear)
+            b = jl_ps.core.glu_ab.linear.bias
+            ps_p = merge(ps_p, (; bias=view(b, 1:C_out)))
+            ps_g = merge(ps_g, (; bias=view(b, C_out+1:2*C_out)))
+        end
+        sync_dense!(py_mul.linear_ab_p, ps_p)
+        sync_dense!(py_mul.linear_ab_g, ps_g)
+    else
+        sync_dense!(py_mul.linear_ab_p, jl_ps.core.glu_ab.linear)
+        sync_dense!(py_mul.linear_ab_g, jl_ps.core.glu_ab.gate)
+    end
+
+    sync_layernorm!(py_mul.layer_norm_out, jl_ps.core.layer_norm_out)
+    sync_dense!(py_mul.linear_z,          jl_ps.core.glu_out.linear)
+    sync_dense!(py_mul.linear_g,          jl_ps.core.glu_out.gate)
 end
