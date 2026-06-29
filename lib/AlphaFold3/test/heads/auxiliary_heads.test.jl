@@ -6,16 +6,16 @@ include("sync_helpers.jl")
 # ────────────────────────────────────────────────────────────────────────────────
 # Shared test dims
 # ────────────────────────────────────────────────────────────────────────────────
-const _rng_h   = Random.Xoshiro(42)
-const _N_h     = 8      # N_token
-const _B_h     = 1
-const _c_s_h   = 16
-const _c_z_h   = 16
+const _rng_h = Random.Xoshiro(42)
+const _N_h = 8      # N_token
+const _B_h = 1
+const _c_s_h = 16
+const _c_z_h = 16
 const _no_dist_bins = 15   # distance bins for PairformerEmbedding
-const _no_pae  = 8
-const _no_pde  = 8
+const _no_pae = 8
+const _no_pde = 8
 const _no_lddt = 10
-const _no_er   = 2
+const _no_er = 2
 const _max_atoms = 8   # max_atoms_per_token (N_atom = N * max_atoms)
 
 # ────────────────────────────────────────────────────────────────────────────────

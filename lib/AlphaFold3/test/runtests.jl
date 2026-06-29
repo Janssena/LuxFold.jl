@@ -6,6 +6,9 @@ using Test, AlphaFold3
 include("setup/python.jl");
 
 @testset "AlphaFold3" begin
+    @testset "Layers" begin
+        include("layers/runtests.jl")
+    end
     @testset "Utils" begin
         include("utils/runtests.jl")
     end
