@@ -45,18 +45,6 @@ function DiffusionTransformer(;
     return DiffusionTransformer(layer_norm_z, Lux.Chain(blocks...))
 end
 
-function DiffusionTransformer(config::NamedTuple; chn_a=nothing, chn_cond=nothing, chn_pair=nothing)
-    chn_a    = something(chn_a,    config.c_a)
-    chn_cond = something(chn_cond, config.c_s)
-    chn_pair = something(chn_pair, config.c_z)
-    chn_hidden = hasproperty(config, :c_hidden_att) ? config.c_hidden_att : config.c_hidden
-    return DiffusionTransformer(;
-        chn_a, chn_cond, chn_pair, chn_hidden,
-        no_heads=config.no_heads, no_blocks=config.no_blocks,
-        n_transition=config.n_transition, n_query=config.n_query, n_key=config.n_key,
-    )
-end
-
 (l::DiffusionTransformer)(inputs::NamedTuple, ps, st) = l(
     inputs.a,
     inputs.s,

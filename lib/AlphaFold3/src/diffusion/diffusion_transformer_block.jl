@@ -60,18 +60,6 @@ function DiffusionTransformerBlock(;
     )
 end
 
-function DiffusionTransformerBlock(config::NamedTuple; chn_a=nothing, chn_cond=nothing, chn_pair=nothing)
-    chn_a    = something(chn_a,    config.c_a)
-    chn_cond = something(chn_cond, config.c_s)
-    chn_pair = something(chn_pair, config.c_z)
-    chn_hidden = hasproperty(config, :c_hidden_att) ? config.c_hidden_att : config.c_hidden
-    return DiffusionTransformerBlock(;
-        chn_a, chn_cond, chn_pair, chn_hidden,
-        no_heads=config.no_heads, n_transition=config.n_transition,
-        n_query=config.n_query, n_key=config.n_key,
-    )
-end
-
 # NamedTuple dispatch — used when chained inside DiffusionTransformer
 function (l::DiffusionTransformerBlock)(inputs::NamedTuple, ps, st)
     a, st_new = l(
