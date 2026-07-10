@@ -49,14 +49,6 @@ function AtomAttentionDecoder(;
     )
 end
 
-function AtomAttentionDecoder(config::NamedTuple)
-    return AtomAttentionDecoder(;
-        chn_atom=config.c_atom, chn_atom_pair=config.c_atom_pair, chn_token=config.c_token,
-        chn_hidden=config.c_hidden, no_heads=config.no_heads, no_blocks=config.no_blocks,
-        n_transition=config.n_transition, n_query=config.n_query, n_key=config.n_key,
-    )
-end
-
 function (l::AtomAttentionDecoder)(batch::NamedTuple, token_agg, atom_single, atom_cond, atom_pair, ps, st)
     # broadcast per-token activations to atoms
     token_agg_proj, st_qin = l.linear_q_in(token_agg, ps.linear_q_in, st.linear_q_in)

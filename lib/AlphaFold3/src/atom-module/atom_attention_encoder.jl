@@ -118,17 +118,6 @@ function AtomAttentionEncoder(;
     )
 end
 
-function AtomAttentionEncoder(config::NamedTuple)
-    return AtomAttentionEncoder(;
-        chn_atom=config.c_atom, chn_atom_pair=config.c_atom_pair, chn_token=config.c_token,
-        chn_hidden=config.c_hidden, no_heads=config.no_heads, no_blocks=config.no_blocks,
-        n_transition=config.n_transition, n_query=config.n_query, n_key=config.n_key,
-        add_noisy_pos=config.add_noisy_pos,
-        chn_single=hasproperty(config, :c_s) ? config.c_s : nothing,
-        chn_pair=hasproperty(config, :c_z) ? config.c_z : nothing,
-    )
-end
-
 # Noisy-position embedding, dispatched on the embedder field type:
 # NoisyPositionEmbedder (add_noisy_pos=true) applies it; NoOpLayer (false) is identity (atom_single=copy(atom_cond)).
 _apply_noisy_positions(::Lux.NoOpLayer, batch, atom_cond, atom_pair, s_trunk, z_trunk, atom_pos, Nq, Nk, ps, st) =

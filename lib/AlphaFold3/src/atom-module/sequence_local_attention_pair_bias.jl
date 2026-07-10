@@ -103,7 +103,7 @@ function (l::SequenceLocalAttentionPairBias)(a::AbstractArray{T}, atom_pair, con
     a_q_norm, a_k_norm, st_q, st_k = _slapb_norm(l, a, cond, ps, st)
 
     a_q, _, pair_mask = convert_single_rep_to_blocks(a_q_norm, Nq, Nk, mask)   # a_q [chn, Nq, Nb, B]
-    _, a_k, _         = convert_single_rep_to_blocks(a_k_norm, Nq, Nk, mask)   # a_k [chn, Nk, Nb, B]
+    _, a_k, _ = convert_single_rep_to_blocks(a_k_norm, Nq, Nk, mask)   # a_k [chn, Nk, Nb, B]
     Nb, B = size(a_q, 3), size(a_q, 4)
 
     # --- pair bias from the pre-blocked atom_pair + additive mask bias ---
