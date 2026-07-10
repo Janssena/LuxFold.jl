@@ -46,14 +46,9 @@ function TemplatePairEmbedderAllAtom(; chn_in::Int, chn_t::Int, chn_dgram::Int=3
     )
 end
 
-TemplatePairEmbedderAllAtom(config::NamedTuple) = TemplatePairEmbedderAllAtom(;
-    chn_in=config.c_in, chn_t=config.c_out, chn_dgram=config.c_dgram, chn_aatype=config.c_aatype,
-)
-
 (l::TemplatePairEmbedderAllAtom)(inputs::NamedTuple, ps, st) = l(inputs.batch, inputs.z, ps, st)
 
-function (l::TemplatePairEmbedderAllAtom)(batch::NamedTuple, z, ps, st)
-    T = eltype(z)
+function (l::TemplatePairEmbedderAllAtom)(batch::NamedTuple, z::AbstractArray{T}, ps, st) where T
     restype = batch.template_restype
     N = size(restype, 2)
 
@@ -63,26 +58,28 @@ function (l::TemplatePairEmbedderAllAtom)(batch::NamedTuple, z, ps, st)
     pb_mask = batch.template_pseudo_beta_mask
     bb_mask = batch.template_backbone_frame_mask
     N_templ = size(pb_mask, 2); B = size(pb_mask, 3)
+    # TODO: should thus be a .& instead
     pbm_pair = reshape(T.(pb_mask), 1, N, 1, N_templ, B) .* reshape(T.(pb_mask), 1, 1, N, N_templ, B) .* same_chain_pair
     bfm_pair = reshape(T.(bb_mask), 1, N, 1, N_templ, B) .* reshape(T.(bb_mask), 1, 1, N, N_templ, B) .* same_chain_pair
 
     unit_vec = batch.template_unit_vector
-    # NOTE: range indexing creates copies, not views — use @view if allocation matters
-    unit_x = unit_vec[1:1, :, :, :, :]; unit_y = unit_vec[2:2, :, :, :, :]; unit_z = unit_vec[3:3, :, :, :, :]
+    unit_x = @view unit_vec[1:1, :, :, :, :]
+    unit_y = @view unit_vec[2:2, :, :, :, :] 
+    unit_z = @view unit_vec[3:3, :, :, :, :]
 
     restype_i = reshape(restype, size(restype, 1), N, 1, N_templ, B)
     restype_j = reshape(restype, size(restype, 1), 1, N, N_templ, B)
 
-    t_emb,      st_d  = l.dgram_linear(batch.template_distogram, ps.dgram_linear, st.dgram_linear)
-    t_pb_mask,  st_p  = l.pseudo_beta_mask_linear(pbm_pair, ps.pseudo_beta_mask_linear, st.pseudo_beta_mask_linear)
+    t_emb, st_d  = l.dgram_linear(batch.template_distogram, ps.dgram_linear, st.dgram_linear)
+    t_pb_mask, st_p  = l.pseudo_beta_mask_linear(pbm_pair, ps.pseudo_beta_mask_linear, st.pseudo_beta_mask_linear)
     t_aatype_i, st_a1 = l.aatype_linear_1(T.(restype_i), ps.aatype_linear_1, st.aatype_linear_1)
     t_aatype_j, st_a2 = l.aatype_linear_2(T.(restype_j), ps.aatype_linear_2, st.aatype_linear_2)
-    t_unit_x,   st_x  = l.x_linear(unit_x, ps.x_linear, st.x_linear)
-    t_unit_y,   st_y  = l.y_linear(unit_y, ps.y_linear, st.y_linear)
-    t_unit_z,   st_z  = l.z_linear(unit_z, ps.z_linear, st.z_linear)
-    t_bb_mask,  st_b  = l.backbone_mask_linear(bfm_pair, ps.backbone_mask_linear, st.backbone_mask_linear)
+    t_unit_x, st_x  = l.x_linear(unit_x, ps.x_linear, st.x_linear)
+    t_unit_y, st_y  = l.y_linear(unit_y, ps.y_linear, st.y_linear)
+    t_unit_z, st_z  = l.z_linear(unit_z, ps.z_linear, st.z_linear)
+    t_bb_mask,st_b  = l.backbone_mask_linear(bfm_pair, ps.backbone_mask_linear, st.backbone_mask_linear)
 
-    t_emb = t_emb .+ t_pb_mask .+ t_aatype_i .+ t_aatype_j .+ t_unit_x .+ t_unit_y .+ t_unit_z .+ t_bb_mask
+    t_emb = @. t_emb + t_pb_mask + t_aatype_i + t_aatype_j + t_unit_x + t_unit_y + t_unit_z + t_bb_mask
 
     z_ln, st_lnz = l.layer_norm_z(z, ps.layer_norm_z, st.layer_norm_z)
     z_proj, st_lz = l.linear_z(z_ln, ps.linear_z, st.linear_z)

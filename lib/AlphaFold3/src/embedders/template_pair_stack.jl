@@ -19,12 +19,6 @@ function TemplatePairStack(; chn_t::Int, chn_hidden_mul::Int, chn_hidden_pair_at
     return TemplatePairStack(Lux.Chain(block_nt), Lux.LayerNorm((chn_t, 1, 1); dims=1))
 end
 
-TemplatePairStack(config::NamedTuple) = TemplatePairStack(;
-    chn_t=config.c_t, chn_hidden_mul=config.c_hidden_tri_mul,
-    chn_hidden_pair_att=config.c_hidden_tri_att, no_heads=config.no_heads,
-    transition_n=config.pair_transition_n, no_blocks=config.no_blocks,
-)
-
 function (l::TemplatePairStack)(t, pair_mask, ps, st)
     C, Ni, Nj, Tpl, B = size(t)
     t4 = reshape(t, C, Ni, Nj, Tpl * B)
