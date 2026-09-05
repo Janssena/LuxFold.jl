@@ -50,6 +50,7 @@ function AttentionPairBias(
     use_bias=false,
     affine=true,
     use_layernorm_in=true,
+    use_layernorm_z=true,
     kwargs...
 )
     @assert rank == 3 || rank == 4 "rank should be either 3 or 4."
@@ -71,7 +72,13 @@ function AttentionPairBias(
         linear_out = Lux.Dense(chn_cond => chn_in, Lux.sigmoid; use_bias=use_bias.linear_out)
     end
 
-    layer_norm_z = if !affine.layer_norm_z || use_bias.layer_norm_z
+    # `use_layernorm_z=false` is for callers that normalise `z` once outside the block instead of
+    # per-block — e.g. AF3's DiffusionTransformer, which owns a single `layer_norm_z` shared by all
+    # of its blocks (openfold-3 `DiffusionAttentionPairBias` has no `layer_norm_z` at all for this
+    # reason). Default `true` keeps the per-block LayerNorm every other caller expects.
+    layer_norm_z = if !use_layernorm_z
+        Lux.NoOpLayer()
+    elseif !affine.layer_norm_z || use_bias.layer_norm_z
         Lux.LayerNorm((chn_z, 1, 1); dims=1, affine=affine.layer_norm_z)
     else
         LayerNormNoBias((chn_z, 1, 1); dims=1)
@@ -97,6 +104,10 @@ end
 (l::AttentionPairBias)(x, z, ps, st) = l(x, z, nothing, nothing, ps, st)
 (l::AttentionPairBias)(x, z, ::Nothing, ps, st) = l(x, z, nothing, nothing, ps, st)
 
+# NOTE: unlike every other mask signature in LuxFold (which competes only with `::Nothing` and is
+# therefore typed `mask::AbstractArray`), the `Bool` here is load-bearing: it is what distinguishes
+# a mask from a `cond` array in the same positional slot. Traced (Reactant) masks are handled by
+# `ext/LuxFoldCoreReactantExt.jl`, which cannot be replaced by loosening these two methods.
 (l::AttentionPairBias)(x, z, mask::AbstractArray{Bool}, ps, st) =
     l(x, z, nothing, mask, ps, st)
 
@@ -135,16 +146,14 @@ end
 A specialized version of `AttentionPairBias` configured for MSA row attention. 
 Sets `rank=4` and standard AlphaFold-style bias/normalization defaults.
 """
-MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads; kwargs...) =
+MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads;
+    use_bias=(
+        linear_z=false,
+        mha=(false, (gate=true, out=true)),
+        layer_norm_in=true,
+        layer_norm_z=true,
+        linear_out=false,
+    ),
+    kwargs...) =
     AttentionPairBias(chn_in, chn_z, head_dim, num_heads;
-        rank=4,
-        chn_cond=nothing,
-        use_bias=(
-            linear_z=false, 
-            mha=(qkv=false, gate=true, out=true), 
-            layer_norm_in=true, 
-            layer_norm_z=true, 
-            linear_out=false
-        ), 
-        kwargs...
-    )
+        rank=4, chn_cond=nothing, use_bias, kwargs...)

@@ -55,6 +55,10 @@ function unblock_and_slice(x::AbstractArray{T,N}, original_n::Int; dims::Int=2) 
     new_sz = (sz[1:dims-1]..., n_padded, sz[dims+2:end]...)
     x_flat = reshape(x, new_sz)
 
-    # Slice. We use selectdim for stability.
-    return collect(selectdim(x_flat, dims, 1:original_n))
+    # Slice with a plain range `getindex` rather than `collect(selectdim(...))`. `collect` on a view
+    # ITERATES it, which under Reactant means scalar indexing into a `TracedRArray`. This negatively
+    # affects compile times.
+    n_padded == original_n && return x_flat
+    idx = ntuple(i -> i == dims ? (1:original_n) : Colon(), ndims(x_flat))
+    return x_flat[idx...]
 end
