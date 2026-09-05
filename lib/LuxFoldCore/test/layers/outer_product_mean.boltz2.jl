@@ -1,5 +1,3 @@
-include("../python/boltz2.jl");
-
 rng = Random.Xoshiro(42)
 
 @testset "Boltz2" begin
@@ -24,7 +22,7 @@ rng = Random.Xoshiro(42)
 
                     y_jl, _ = jl_layer(m, mask, ps, st)
 
-                    py_layer = py"Boltz2OuterProductMean"(chn_in, chn_hidden, chn_z)
+                    py_layer = PyBoltz2OuterProductMean(chn_in, chn_hidden, chn_z)
                     
                     sync_boltz2_opm!(py_layer, ps)
             

@@ -1,5 +1,3 @@
-include("../python/boltz2.jl");
-
 rng = Random.Xoshiro(42)
 
 @testset "Boltz2" begin
@@ -27,7 +25,7 @@ rng = Random.Xoshiro(42)
 
                     y_jl, _ = jl_layer(m, z, mask, ps, st)
 
-                    py_layer = py"Boltz2PairWeightedAveraging"(chn_msa, chn_pair, head_dim, num_heads)
+                    py_layer = PyBoltz2PairWeightedAveraging(chn_msa, chn_pair, head_dim, num_heads)
 
                     sync_boltz2_pwa!(py_layer, ps)
 

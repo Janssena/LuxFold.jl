@@ -1,5 +1,3 @@
-include("../python/alphafold3.jl");
-
 rng = Random.Xoshiro(42)
 
 @testset "AlphaFold3" begin
@@ -18,13 +16,19 @@ rng = Random.Xoshiro(42)
                 s = randn(rng, T, chn_s, dims...)
                 rank = length(size(x))
                 
+                # EXACTLY how AlphaFold3 builds it — see
+                # `lib/AlphaFold3/src/layers/conditioned_transition_block.jl:31` and
+                # `atom-module/sequence_local_attention_pair_bias.jl:44`. Both use
+                # `use_bias=(false, (gate=true, shift=false))` on the default `affine`, which is
+                # also what the real openfold-3 `AdaLN` has: layer_norm_a bare, layer_norm_s
+                # weight-only, `linear_s` (shift) bias-free, `linear_g` (gate) biased.
                 affine = (layer_norm_a = false, layer_norm_s = true)
-                use_bias = (true, (layer_norm_a = false, layer_norm_s = false, ))
+                use_bias = (false, (gate = true, shift = false))
                 
                 jl_layer = AdaLN(chn_a, chn_s; rank, affine, use_bias, epsilon=T(1f-5))
                 ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                py_layer = py"AF3AdaLN"(chn_a, chn_s, eps=T(1f-5))
+                py_layer = PyAF3AdaLN(chn_a, chn_s, eps=T(1f-5))
 
                 sync_af3_adaln!(py_layer, ps)
 

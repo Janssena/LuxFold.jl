@@ -1,5 +1,3 @@
-include("../python/alphafold2.jl");
-
 rng = Random.Xoshiro(42)
 
 @testset "AlphaFold2" begin
@@ -25,7 +23,7 @@ rng = Random.Xoshiro(42)
 
                     y_jl, _ = jl_layer(m, mask, ps, st)
 
-                    py_layer = py"AF2OuterProductMean"(chn_in, chn_z, chn_hidden)
+                    py_layer = PyAF2OuterProductMean(chn_in, chn_z, chn_hidden)
                     
                     sync_af2_opm!(py_layer, ps)
             

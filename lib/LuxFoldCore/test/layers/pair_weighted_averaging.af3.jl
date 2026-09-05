@@ -1,5 +1,3 @@
-include("../python/alphafold3.jl");
-
 rng = Random.Xoshiro(42)
 
 @testset "AlphaFold3" begin
@@ -21,12 +19,16 @@ rng = Random.Xoshiro(42)
                     m = randn(rng, T, chn_msa, N_res, N_seq, B)
                     z = randn(rng, T, chn_pair, N_res, N_res, B)
 
-                    jl_layer = PairWeightedAveraging(chn_msa, chn_pair, head_dim, num_heads; use_bias=true)
+                    # As AlphaFold3 builds it — `lib/AlphaFold3/src/msa-module/msa_block.jl:50`:
+                    # all linears bias-free, LayerNorms stay affine.
+                    jl_layer = PairWeightedAveraging(chn_msa, chn_pair, head_dim, num_heads;
+                        use_bias=(layer_norm_m=true, layer_norm_z=true, linear_v=false,
+                                  linear_z=false, linear_g=false, linear_out=false))
                     ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
                     y_jl, _ = jl_layer(m, z, mask, ps, st)
 
-                    py_layer = py"AF3MSAPairWeightedAveraging"(chn_msa, head_dim, chn_pair, num_heads)
+                    py_layer = PyAF3MSAPairWeightedAveraging(chn_msa, head_dim, chn_pair, num_heads)
 
                     sync_af3_pwa!(py_layer, ps)
 

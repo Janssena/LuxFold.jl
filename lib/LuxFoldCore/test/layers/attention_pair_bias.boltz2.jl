@@ -1,6 +1,4 @@
 # Load Boltz2 reference
-include("../python/boltz2.jl")
-
 rng = Random.Xoshiro(42)
 
 
@@ -24,11 +22,14 @@ rng = Random.Xoshiro(42)
                     z = randn(rng, T, chn_z, N, N, B)
 
                     affine = true
-                    use_bias = (layer_norm_in=false, layer_norm_z=true, linear_z=false, mha=false, linear_out=false)
+                    # As Boltz2 builds it — `lib/Boltz2/src/pairformer/pairformer_layer.jl:71`:
+                    # only the query projection carries a bias inside the attention.
+                    use_bias = (layer_norm_z=true, linear_z=false,
+                                mha=(q=true, k=false, v=false, gate=false, out=false))
                     jl_layer = AttentionPairBias(chn_in, chn_z, head_dim, num_heads; affine, use_bias, use_layernorm_in=false, fuse_qkv=false)
                     ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                    py_layer = py"Boltz2AttentionPairBias"(chn_in, chn_z, num_heads)
+                    py_layer = PyBoltz2AttentionPairBias(chn_in, chn_z, num_heads)
                     sync_boltz2_attention_pair_bias!(py_layer, ps)
 
                     y_jl, _ = jl_layer(x, z, mask, ps, st)

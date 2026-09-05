@@ -1,5 +1,3 @@
-include("../python/alphafold3.jl");
-
 rng = Random.Xoshiro(42)
 
 @testset "AlphaFold3" begin
@@ -20,12 +18,14 @@ rng = Random.Xoshiro(42)
                     m = randn(rng, T, chn_in, N_res, N_seq, B)
                     
                     # AF3 style: bias=true, clamp=false, project_first=true
-                    jl_layer = OuterProductMean(chn_in, chn_z, chn_hidden; use_bias=true, use_clamp=false, project_first=true)
+                    # As AlphaFold3 builds it — `lib/AlphaFold3/src/msa-module/msa_block.jl:61`:
+                    # linear_1/2 bias-free, linear_out always biased. Matches openfold-3 exactly.
+                    jl_layer = OuterProductMean(chn_in, chn_z, chn_hidden; use_bias=false, use_clamp=false, project_first=true)
                     ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
                     y_jl, _ = jl_layer(m, mask, ps, st)
 
-                    py_layer = py"AF3OuterProductMean"(chn_in, chn_z, chn_hidden)
+                    py_layer = PyAF3OuterProductMean(chn_in, chn_z, chn_hidden)
                     
                     sync_af3_opm!(py_layer, ps)
             

@@ -1,5 +1,3 @@
-include("../python/alphafold3.jl")
-
 rng = Random.Xoshiro(42)
 
 @testset "AlphaFold3" begin
@@ -26,18 +24,35 @@ rng = Random.Xoshiro(42)
                     z = randn(rng, T, chn_z, N, N, B)
                     cond = isnothing(cond) ? nothing : T.(cond)
 
+                    # EXACTLY how AlphaFold3 builds each form.
                     if isnothing(cond)
+                        # `lib/AlphaFold3/src/pairformer/pairformer_block.jl:49`
                         affine = true
-                        use_bias = (true, (mha=false,))
+                        use_bias = (layer_norm_in=true, layer_norm_z=true, linear_z=false,
+                                    mha=(false, (q=true,)), linear_out=false)
                     else
-                        affine = (true, (layer_norm_in=(layer_norm_a=false, layer_norm_s=true,),))
-                        use_bias = (true, (layer_norm_in=(false, (shift=true, gate=true,)), mha=false,))
+                        # `lib/AlphaFold3/src/diffusion/diffusion_transformer_block.jl:43`
+                        affine = (layer_norm_in=(layer_norm_a=false, layer_norm_s=true),)
+                        use_bias = (false, (layer_norm_in=(false, (gate=true, shift=false)),
+                                            mha=(false, (q=true,)), linear_out=true))
                     end
 
-                    jl_layer = AttentionPairBias(chn_in, chn_z, head_dim, num_heads; chn_cond, affine, use_bias, fuse_qkv=false)
+                    # `use_layernorm_z=false` in the conditioned form: openfold-3's
+                    # `DiffusionAttentionPairBias` has no `layer_norm_z` at all — the enclosing
+                    # DiffusionTransformer normalises `z` once for the whole stack. Same as
+                    # `lib/AlphaFold3/src/diffusion/diffusion_transformer_block.jl:47`.
+                    jl_layer = AttentionPairBias(chn_in, chn_z, head_dim, num_heads;
+                        chn_cond, affine, use_bias, fuse_qkv=false,
+                        use_layernorm_z=isnothing(cond))
                     ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                    py_layer = py"AF3AttentionPairBias"(chn_in, chn_in, chn_in, chn_cond, chn_z, head_dim, num_heads, !isnothing(cond))
+                    # TWO upstream classes, not one flag. openfold-3 splits the conditioned and
+                    # unconditioned forms into `DiffusionAttentionPairBias` (AdaLN on `a`, taking
+                    # `s`) and `AttentionPairBias` (plain LayerNorm). The hand-copied reference
+                    # this test used to run against fused them behind `use_ada_layer_norm`, so the
+                    # 8th positional here used to be that flag — upstream it is `gating`.
+                    PyCls = isnothing(cond) ? PyAF3AttentionPairBias : PyAF3DiffusionAttentionPairBias
+                    py_layer = PyCls(chn_in, chn_in, chn_in, chn_cond, chn_z, head_dim, num_heads)
 
                     sync_af3_attention_pair_bias!(py_layer, ps)
 
@@ -48,7 +63,13 @@ rng = Random.Xoshiro(42)
                     cond_py = isnothing(cond) ? nothing : to_py(cond; swap_batch_dim=true)
                     mask_py = isnothing(mask) ? nothing : to_py(mask; swap_batch_dim=true).to(py_dtype(T))
 
-                    y_py = py_layer(x_py, z_py, cond_py, mask_py)
+                    # The two upstream classes have DIFFERENT forward signatures:
+                    # `AttentionPairBias(a, z, mask, ...)` takes no `s`, while
+                    # `DiffusionAttentionPairBias(a, z, s, mask, ...)` does. Passing `s` to the
+                    # unconditioned one pushed `mask` into `use_deepspeed_evo_attention`, whose
+                    # `or` on a tensor raises "Boolean value of Tensor ... is ambiguous".
+                    y_py = isnothing(cond) ? py_layer(x_py, z_py, mask_py) :
+                                             py_layer(x_py, z_py, cond_py, mask_py)
 
                     @testset "Python parity ($T)" begin
                         @test y_jl ≈ to_jl(y_py; swap_batch_dim=true)
@@ -68,10 +89,16 @@ rng = Random.Xoshiro(42)
                         z = randn(rng, T, chn_z, N, N, B)
                         mask = isnothing(mask) ? nothing : rand(rng, Bool, N, S, B)
 
-                        jl_layer = MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads; fuse_qkv=false)
+                        # Matches the REAL openfold-3 `MSARowAttentionWithPairBias`: LayerNorms
+                        # affine+biased, `linear_z` BIAS-FREE, and every mha projection
+                        # (q/k/v/o/g) bias-free. The hand-copied reference gave `linear_z` a bias.
+                        # (AlphaFold2 also builds this layer — `evoformer_block.jl:72` — but
+                        # against openfold's own AF2 class, which its own suite covers.)
+                        jl_layer = MSARowAttentionPairBias(chn_in, chn_z, head_dim, num_heads;
+                            use_bias=(true, (linear_z=false, mha=false)), fuse_qkv=false)
                         ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                        py_layer = py"AF3MSARowAttentionWithPairBias"(chn_in, chn_z, head_dim, num_heads)
+                        py_layer = PyAF3MSARowAttentionWithPairBias(chn_in, chn_z, head_dim, num_heads)
                         sync_af3_msa_row_attention_with_pair_bias!(py_layer, ps)
 
                         y_jl, _ = jl_layer(x, z, mask, ps, st)

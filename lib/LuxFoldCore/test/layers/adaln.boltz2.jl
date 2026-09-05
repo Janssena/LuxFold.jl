@@ -1,5 +1,3 @@
-include("../python/boltz2.jl");
-
 rng = Random.Xoshiro(42)
 
 @testset "Boltz2" begin
@@ -24,7 +22,7 @@ rng = Random.Xoshiro(42)
                 jl_layer = AdaLN(chn_a, chn_s; rank, affine, use_bias, epsilon=T(1f-5))
                 ps, st = Lux.setup(rng, jl_layer) |> convert_types(T)
 
-                py_layer = py"Boltz2AdaLN"(chn_a, chn_s)
+                py_layer = PyBoltz2AdaLN(chn_a, chn_s)
 
                 sync_boltz2_adaln!(py_layer, ps)
 
